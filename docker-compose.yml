@@ -14,15 +14,15 @@ services:
   db:
     image: mysql:8.0
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: test_db
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root}
+      MYSQL_DATABASE: ${DB_NAME:-test_db}
     volumes:
       - mysql-data:/var/lib/mysql
     networks:
       - notes-app
     restart: always
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${DB_PASSWORD:-root}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -34,8 +34,14 @@ services:
     command: sh -c "python manage.py migrate --no-input && python manage.py collectstatic --no-input && gunicorn notesapp.wsgi:application --bind 0.0.0.0:8000"
     ports:
       - "8000:8000"
-    env_file:
-      - ".env"
+    environment:
+      DB_NAME: ${DB_NAME:-test_db}
+      DB_USER: ${DB_USER:-root}
+      DB_PASSWORD: ${DB_PASSWORD:-root}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_HOST: ${DB_HOST:-db}
+      DEBUG: ${DEBUG:-False}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-docker-compose-default-secret-key}
     restart: always
     depends_on:
       db:

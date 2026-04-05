@@ -45,7 +45,7 @@ Make sure the following tools are installed before running the project:
 
 ## Environment Variables
 
-The backend reads database configuration from the root `.env` file.
+The backend can read database configuration from the root `.env` file, but Docker Compose now provides sensible defaults when `.env` is missing.
 
 Example:
 
@@ -77,7 +77,7 @@ cd devops-1-django-app
 
 ### 2. Verify or create the environment file
 
-Create the root `.env` file from `.env.example`, then verify it contains the database settings below:
+This step is optional for Docker-based deployments because Compose will use defaults when `.env` is missing. If you want to override them, create the root `.env` file from `.env.example`, then verify it contains the database settings below:
 
 ```env
 DB_NAME=test_db
