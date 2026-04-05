@@ -1,3 +1,13 @@
+FROM node:18-alpine AS frontend-builder
+
+WORKDIR /frontend
+
+COPY mynotes/package*.json ./
+RUN npm ci
+
+COPY mynotes/ ./
+RUN npm run build
+
 FROM python:3.9-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -13,6 +23,7 @@ RUN apt-get update \
     && pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+COPY --from=frontend-builder /frontend/build ./mynotes/build
 
 EXPOSE 8000
 CMD ["python3", "manage.py", "runserver", "0.0.0.0:8000"]

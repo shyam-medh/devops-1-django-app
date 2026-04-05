@@ -89,7 +89,7 @@ DB_HOST=db
 
 ### 3. Install frontend dependencies
 
-The React frontend build output is not committed to the repository, so after cloning you need to install the frontend packages locally:
+This step is only needed if you want to build or run the React app directly outside Docker:
 
 ```bash
 cd mynotes
@@ -103,7 +103,7 @@ npm run build
 cd ..
 ```
 
-This generates the `mynotes/build` folder used by Django to serve the frontend.
+This generates the `mynotes/build` folder used by Django to serve the frontend when you are not relying on the Docker image build.
 
 ### 5. Build and start the application
 
@@ -114,6 +114,7 @@ docker compose up --build -d
 This command will:
 
 - build the Docker images
+- build the React frontend inside the Django image
 - start the MySQL, Django, and Nginx containers
 - run Django migrations automatically
 - collect static files automatically
@@ -233,8 +234,9 @@ The following paths are intentionally ignored by Git:
 
 Important:
 
-- The React application is still served by Django from the built frontend output.
-- If `mynotes/build` is missing, rebuild the frontend before starting the full app flow that depends on those files.
+- The React application is served by Django from the built frontend output.
+- Docker builds the frontend during image creation, so `mynotes/build` does not need to be committed.
+- If you run Django outside Docker and `mynotes/build` is missing, rebuild the frontend first.
 
 Frontend build command:
 
