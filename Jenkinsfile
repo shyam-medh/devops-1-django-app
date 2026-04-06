@@ -1,6 +1,6 @@
 @Library("Shared-For-Django-App) _
 pipeline {
-    agent any
+    agent {label 'dard'}
 
     environment {
         DJANGO_SECRET_KEY = 'jenkins-ci-secret-key'
