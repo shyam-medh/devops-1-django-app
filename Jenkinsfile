@@ -31,7 +31,7 @@ pipeline {
 
         stage('Build Frontend') {
             steps {
-                dir('mynotes') {
+                dir('frontend') {
                     script {
                         if (isUnix()) {
                             if (fileExists('package-lock.json')) {
@@ -59,11 +59,11 @@ pipeline {
                     if (isUnix()) {
                         sh 'python3 -m venv .venv'
                         sh '.venv/bin/python -m pip install --upgrade pip'
-                        sh '.venv/bin/python -m pip install -r requirements.txt'
+                        sh '.venv/bin/python -m pip install -r backend/requirements.txt'
                     } else {
                         bat 'python -m venv .venv'
                         bat '.\\.venv\\Scripts\\python.exe -m pip install --upgrade pip'
-                        bat '.\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt'
+                        bat '.\\.venv\\Scripts\\python.exe -m pip install -r backend\\requirements.txt'
                     }
                 }
             }
@@ -73,13 +73,13 @@ pipeline {
             steps {
                 script {
                     if (isUnix()) {
-                        sh '.venv/bin/python manage.py check'
-                        sh '.venv/bin/python manage.py test'
-                        sh '.venv/bin/python manage.py collectstatic --no-input'
+                        sh '.venv/bin/python backend/manage.py check'
+                        sh '.venv/bin/python backend/manage.py test'
+                        sh '.venv/bin/python backend/manage.py collectstatic --no-input'
                     } else {
-                        bat '.\\.venv\\Scripts\\python.exe manage.py check'
-                        bat '.\\.venv\\Scripts\\python.exe manage.py test'
-                        bat '.\\.venv\\Scripts\\python.exe manage.py collectstatic --no-input'
+                        bat '.\\.venv\\Scripts\\python.exe backend\\manage.py check'
+                        bat '.\\.venv\\Scripts\\python.exe backend\\manage.py test'
+                        bat '.\\.venv\\Scripts\\python.exe backend\\manage.py collectstatic --no-input'
                     }
                 }
             }
@@ -118,7 +118,7 @@ pipeline {
 
     post {
         always {
-            archiveArtifacts artifacts: 'mynotes/build/**', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'frontend/build/**', allowEmptyArchive: true
         }
     }
 }

@@ -1,72 +1,53 @@
-# Notes App Django
+# Django Notes App
 
-Notes App Django is a full-stack notes application built with Django and React, containerized with Docker Compose, and served through Nginx. The project is structured for local development and practical DevOps learning, with MySQL used as the primary database and Gunicorn serving the Django application.
+A full-stack notes application built with Django REST Framework and React, packaged with Docker Compose, proxied by Nginx, and backed by MySQL.
 
-## Repository
+## Project Hierarchy
 
-```bash
-git clone https://github.com/shyam-medh/devops-1-django-app.git
-cd devops-1-django-app
+```text
+.
+|-- backend/           Django project, API app, Python dependencies, backend Dockerfile
+|-- frontend/          React application source
+|-- infra/nginx/       Nginx image and reverse-proxy configuration
+|-- docker-compose.yml Multi-container local environment
+|-- Jenkinsfile        CI pipeline for frontend, backend, and compose validation
+|-- .env.example       Sample environment variables
+|-- README.md          Setup and run instructions
 ```
 
-## Project Overview
+## Stack
 
-This repository brings together a complete web application stack:
-
-- `Django` for the backend application and API
-- `React` for the frontend user interface
-- `MySQL` for persistent relational data storage
-- `Gunicorn` as the Python application server
-- `Nginx` as the reverse proxy
-- `Docker Compose` to orchestrate the full environment
-
-The application is intended to be simple to run, easy to rebuild, and suitable for showcasing a containerized deployment workflow.
+- Django 4 + Django REST Framework
+- React 18
+- MySQL 8
+- Gunicorn
+- Nginx
+- Docker Compose
 
 ## Architecture
 
-The stack is composed of three services:
-
-- `db`: MySQL 8 with a persistent Docker volume
-- `django`: Django application container that runs migrations, collects static files, and starts Gunicorn
-- `nginx`: Reverse proxy that exposes the application to the browser
-
-Application flow:
-
 `Browser -> Nginx -> Django -> MySQL`
+
+Services started by Compose:
+
+- `nginx`: public entrypoint on `http://localhost:8080`
+- `django`: Django app on `http://localhost:8000`
+- `db`: MySQL database inside the Docker network
 
 ## Prerequisites
 
-Make sure the following tools are installed before running the project:
+For the recommended Docker workflow:
 
 - Docker Desktop
 - Docker Compose
-- Node.js
+
+For optional local development without Docker:
+
+- Python 3.9+
+- Node.js 18+
 - npm
 
-## Environment Variables
-
-The backend can read database configuration from the root `.env` file, but Docker Compose now provides sensible defaults when `.env` is missing.
-
-Example:
-
-```env
-DB_NAME=test_db
-DB_USER=root
-DB_PASSWORD=root
-DB_PORT=3306
-DB_HOST=db
-```
-
-Optional Django configuration can also be provided:
-
-```env
-DEBUG=True
-DJANGO_SECRET_KEY=your-secret-key
-```
-
-## Getting Started
-
-If you are cloning this repository for the first time, follow these steps in order.
+## Quick Start
 
 ### 1. Clone the repository
 
@@ -75,9 +56,15 @@ git clone https://github.com/shyam-medh/devops-1-django-app.git
 cd devops-1-django-app
 ```
 
-### 2. Verify or create the environment file
+### 2. Create the environment file
 
-This step is optional for Docker-based deployments because Compose will use defaults when `.env` is missing. If you want to override them, create the root `.env` file from `.env.example`, then verify it contains the database settings below:
+Docker Compose has defaults, but using a local `.env` file is clearer for new contributors.
+
+```bash
+cp .env.example .env
+```
+
+Example values:
 
 ```env
 DB_NAME=test_db
@@ -85,177 +72,195 @@ DB_USER=root
 DB_PASSWORD=root
 DB_PORT=3306
 DB_HOST=db
+DEBUG=False
+DJANGO_SECRET_KEY=change-me
 ```
 
-### 3. Install frontend dependencies
-
-This step is only needed if you want to build or run the React app directly outside Docker:
-
-```bash
-cd mynotes
-npm install
-```
-
-### 4. Build the frontend
-
-```bash
-npm run build
-cd ..
-```
-
-This generates the `mynotes/build` folder used by Django to serve the frontend when you are not relying on the Docker image build.
-
-### 5. Build and start the application
+### 3. Build and start the project
 
 ```bash
 docker compose up --build -d
 ```
 
-This command will:
+What this does:
 
-- build the Docker images
-- build the React frontend inside the Django image
-- start the MySQL, Django, and Nginx containers
-- run Django migrations automatically
-- collect static files automatically
+- builds the frontend inside the backend image
+- starts MySQL, Django, and Nginx
+- runs Django migrations automatically
+- collects static files automatically
 
-### 6. Access the application
+### 4. Open the app
 
-- Main application: `http://localhost:8080`
+- Main app: `http://localhost:8080`
 - Django directly: `http://localhost:8000`
 - Django admin: `http://localhost:8080/admin/`
 
-### 7. Stop the application
+### 5. Stop the project
 
 ```bash
 docker compose down
 ```
 
-## Docker Compose Operations
-
-### Start existing containers
-
-Use this when the images are already built and you only want to start the stack:
-
-```bash
-docker compose up -d
-```
-
-### Start and rebuild containers
-
-Use this after making code or Docker-related changes:
-
-```bash
-docker compose up --build -d
-```
-
-### Stop the running containers
-
-Use this to stop and remove the running services:
-
-```bash
-docker compose down
-```
-
-### Stop containers and remove orphan services
-
-Useful if the compose setup has changed and old containers still exist:
-
-```bash
-docker compose down --remove-orphans
-```
-
-### Restart the stack
-
-```bash
-docker compose down
-docker compose up --build -d
-```
-
-## Useful Commands
-
-View running containers:
+## Useful Docker Commands
 
 ```bash
 docker compose ps
-```
-
-View logs:
-
-```bash
 docker compose logs -f
-```
-
-Run Django system checks:
-
-```bash
+docker compose exec django sh
+docker compose exec django python manage.py createsuperuser
 docker compose run --rm django python manage.py check
 ```
 
-Open a shell inside the Django container:
+Rebuild after code or Docker changes:
 
 ```bash
-docker compose exec django sh
+docker compose up --build -d
 ```
 
-## Project Structure
+## Jenkins Pipeline
+
+This repository already includes a Jenkins pipeline in `Jenkinsfile`.
+
+### Jenkins prerequisites
+
+Your Jenkins agent should have:
+
+- Git
+- Python 3.9+
+- Node.js 18+
+- npm
+- Docker and Docker Compose if you want the pipeline to validate the compose setup
+
+Useful note:
+
+- If Docker is not installed on the Jenkins agent, the pipeline skips the Docker Compose validation stage.
+- If `.env` is missing, the pipeline creates it from `.env.example` before running Compose validation.
+
+### How to run this project from Jenkins
+
+1. Open Jenkins.
+2. Create a new item.
+3. Choose `Pipeline` as the job type.
+4. In the job configuration, select `Pipeline script from SCM`.
+5. Choose `Git` as the SCM.
+6. Add your repository URL:
 
 ```text
-.
-|-- api/                Django app for notes APIs
-|-- mynotes/            React source and built frontend assets
-|-- nginx/              Nginx Dockerfile and configuration
-|-- notesapp/           Django project settings and URLs
-|-- docker-compose.yml  Multi-container application setup
-|-- Dockerfile          Django application image
-|-- requirements.txt    Python dependencies
-|-- .env                Environment configuration
+https://github.com/shyam-medh/devops-1-django-app.git
 ```
 
-## Notes
+7. Select the branch you want Jenkins to build.
+8. Set `Script Path` to:
 
-- MySQL is available only within the Docker network and is not published to the host machine.
-- Nginx is exposed on port `8080` to avoid conflicts with services that may already use port `80`.
-- Static files are collected automatically when the Django container starts.
-- The Django project can fall back to SQLite when MySQL environment variables are not provided.
+```text
+Jenkinsfile
+```
 
-## Repository Cleanup
+9. Save the job.
+10. Click `Build Now`.
 
-The project has been cleaned to remove local-only and generated artifacts that should not be committed. Items such as Python cache folders, local database files, collected static files, local MySQL data, mock frontend JSON files, and unused Docker-related files were removed from the repository.
+### What the Jenkins pipeline does
 
-The following paths are intentionally ignored by Git:
+The pipeline runs these stages:
 
-- `__pycache__/`
-- `db.sqlite3`
-- `staticfiles/`
-- `mysql-data/`
-- `mynotes/node_modules/`
-- `mynotes/build/`
+1. `Verify Toolchain`
+2. `Build Frontend`
+3. `Install Backend Dependencies`
+4. `Validate Django App`
+5. `Validate Docker Compose`
 
-Important:
+In practice, Jenkins will:
 
-- The React application is served by Django from the built frontend output.
-- Docker builds the frontend during image creation, so `mynotes/build` does not need to be committed.
-- If you run Django outside Docker and `mynotes/build` is missing, rebuild the frontend first.
+- verify Python, Node.js, and npm
+- install frontend dependencies in `frontend/`
+- build the React app
+- create a Python virtual environment
+- install backend dependencies from `backend/requirements.txt`
+- run Django `check`, `test`, and `collectstatic`
+- validate `docker compose config` when Docker is available
 
-Frontend build command:
+### Jenkins build output
+
+The pipeline archives the built frontend files from:
+
+```text
+frontend/build/
+```
+
+You can download them from the Jenkins job after a successful build.
+
+## Local Development Without Docker
+
+### Backend
 
 ```bash
-cd mynotes
+python -m venv .venv
+```
+
+Activate the virtual environment:
+
+```bash
+# Windows PowerShell
+.venv\Scripts\activate
+
+# macOS / Linux
+source .venv/bin/activate
+```
+
+Then install and run the backend:
+
+```bash
+pip install -r backend/requirements.txt
+python backend/manage.py migrate
+python backend/manage.py runserver
+```
+
+Notes:
+
+- If `DB_NAME` is not set, Django falls back to SQLite.
+- Static files are collected into `backend/staticfiles/`.
+
+### Frontend
+
+In a second terminal:
+
+```bash
+cd frontend
+npm install
+npm start
+```
+
+The React dev server proxies API requests to `http://127.0.0.1:8000`.
+
+If you want Django to serve the built frontend instead of the React dev server:
+
+```bash
+cd frontend
 npm install
 npm run build
 ```
 
-## Tech Stack
+## Environment Variables
 
-- Django
-- Django REST Framework
-- React
-- MySQL 8
-- Gunicorn
-- Nginx
-- Docker Compose
+Root `.env` supports these values:
 
-## Repository Link
+- `DB_NAME`
+- `DB_USER`
+- `DB_PASSWORD`
+- `DB_PORT`
+- `DB_HOST`
+- `DEBUG`
+- `DJANGO_SECRET_KEY`
 
-`https://github.com/shyam-medh/devops-1-django-app.git`
+## Troubleshooting
+
+- If `localhost:8080` is busy, stop the conflicting process or change the published port in `docker-compose.yml`.
+- If the frontend looks outdated, rebuild with `docker compose up --build -d`.
+- If containers start but the app is unavailable, check `docker compose logs -f`.
+- If you want a completely fresh database volume, run `docker compose down -v` and then start again.
+
+## Notes
+
+- `frontend/build/` is generated output and should not be committed.
+- MySQL is available only inside the Docker network.
+- Nginx is exposed on port `8080` to avoid conflicts with services already using port `80`.

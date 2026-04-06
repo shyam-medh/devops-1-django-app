@@ -15,6 +15,9 @@ from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+FRONTEND_DIR = BASE_DIR.parent / 'frontend'
+FRONTEND_BUILD_DIR = FRONTEND_DIR / 'build'
+FRONTEND_STATIC_DIR = FRONTEND_BUILD_DIR / 'static'
 
 
 # Quick-start development settings - unsuitable for production
@@ -60,7 +63,7 @@ TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
         'DIRS': [
-            BASE_DIR / 'mynotes/build'
+            FRONTEND_BUILD_DIR
         ],
         'APP_DIRS': True,
         'OPTIONS': {
@@ -142,9 +145,9 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 
-STATICFILES_DIRS = [os.path.join(BASE_DIR, 'mynotes/build/static')]
+STATICFILES_DIRS = [FRONTEND_STATIC_DIR] if FRONTEND_STATIC_DIR.exists() else []
 
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.1/ref/settings/#default-auto-field

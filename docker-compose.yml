@@ -1,7 +1,7 @@
 services:
   nginx:
     build:
-      context: ./nginx
+      context: ./infra/nginx
     ports:
       - "8080:80"
     networks:
@@ -31,6 +31,7 @@ services:
   django:
     build:
       context: .
+      dockerfile: backend/Dockerfile
     command: sh -c "python manage.py migrate --no-input && python manage.py collectstatic --no-input && gunicorn notesapp.wsgi:application --bind 0.0.0.0:8000"
     ports:
       - "8000:8000"
