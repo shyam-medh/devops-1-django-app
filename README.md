@@ -10,7 +10,7 @@ A full-stack notes application built with Django REST Framework and React, packa
 |-- frontend/          React application source
 |-- infra/nginx/       Nginx image and reverse-proxy configuration
 |-- docker-compose.yml Multi-container local environment
-|-- Jenkinsfile        CI pipeline for frontend, backend, and compose validation
+|-- Jenkinsfile        Basic CI/CD pipeline for frontend, backend, and container deployment
 |-- .env.example       Sample environment variables
 |-- README.md          Setup and run instructions
 ```
@@ -129,12 +129,11 @@ Your Jenkins agent should have:
 - Python 3.9+
 - Node.js 18+
 - npm
-- Docker and Docker Compose if you want the pipeline to validate the compose setup
+- Docker and Docker Compose
 
 Useful note:
 
-- If Docker is not installed on the Jenkins agent, the pipeline skips the Docker Compose validation stage.
-- If `.env` is missing, the pipeline creates it from `.env.example` before running Compose validation.
+- If `.env` is missing, the pipeline creates it from `.env.example` before deployment.
 
 ### How to run this project from Jenkins
 
@@ -163,21 +162,19 @@ Jenkinsfile
 
 The pipeline runs these stages:
 
-1. `Verify Toolchain`
-2. `Build Frontend`
-3. `Install Backend Dependencies`
-4. `Validate Django App`
-5. `Validate Docker Compose`
+1. `Build Frontend`
+2. `Install Backend Dependencies`
+3. `Test Backend`
+4. `Deploy Containers`
 
 In practice, Jenkins will:
 
-- verify Python, Node.js, and npm
 - install frontend dependencies in `frontend/`
 - build the React app
 - create a Python virtual environment
 - install backend dependencies from `backend/requirements.txt`
-- run Django `check`, `test`, and `collectstatic`
-- validate `docker compose config` when Docker is available
+- run Django `check` and `test`
+- deploy the project with `docker compose up --build -d`
 
 ### Jenkins build output
 
