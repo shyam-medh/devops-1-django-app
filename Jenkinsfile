@@ -1,4 +1,4 @@
-@Library("Shared-For-Django_App) _
+@Library("Shared-For-Django-App) _
 pipeline {
     agent any
 
