@@ -1,4 +1,4 @@
-@Library("Shared-For-Django-App) _
+@Library("Shared-For-Django-App") _
 pipeline {
     agent {label 'dard'}
 
