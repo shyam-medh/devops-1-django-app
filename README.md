@@ -76,15 +76,16 @@ DEBUG=False
 DJANGO_SECRET_KEY=change-me
 ```
 
-### 3. Build and start the project
+### 3. Pull and start the project
 
 ```bash
-docker compose up --build -d
+docker compose pull
+docker compose up -d
 ```
 
 What this does:
 
-- builds the frontend inside the backend image
+- pulls the published backend and nginx images from Docker Hub
 - starts MySQL, Django, and Nginx
 - runs Django migrations automatically
 - collects static files automatically
@@ -111,10 +112,56 @@ docker compose exec django python manage.py createsuperuser
 docker compose run --rm django python manage.py check
 ```
 
-Rebuild after code or Docker changes:
+Refresh to the latest published images:
 
 ```bash
-docker compose up --build -d
+docker compose pull
+docker compose up -d
+```
+
+## Push Images To Docker Hub
+
+This project builds two publishable images:
+
+- `django`: the Django app image with the built React frontend included
+- `nginx`: the reverse-proxy image
+
+Set your Docker Hub namespace and image tag in the root `.env` file:
+
+```env
+DOCKERHUB_USERNAME=your-dockerhub-username
+IMAGE_TAG=latest
+```
+
+To publish a new image version after code or Dockerfile changes, sign in, build each image, and push:
+
+```bash
+docker login
+docker build -f backend/Dockerfile -t <DOCKERHUB_USERNAME>/django-notes-backend:<IMAGE_TAG> .
+docker build -f infra/nginx/Dockerfile -t <DOCKERHUB_USERNAME>/django-notes-nginx:<IMAGE_TAG> infra/nginx
+docker push <DOCKERHUB_USERNAME>/django-notes-backend:<IMAGE_TAG>
+docker push <DOCKERHUB_USERNAME>/django-notes-nginx:<IMAGE_TAG>
+```
+
+The pushed image names will be:
+
+```text
+docker.io/<DOCKERHUB_USERNAME>/django-notes-backend:<IMAGE_TAG>
+docker.io/<DOCKERHUB_USERNAME>/django-notes-nginx:<IMAGE_TAG>
+```
+
+Example:
+
+```bash
+docker build -f backend/Dockerfile -t shyammedh/django-notes-backend:v1 .
+docker build -f infra/nginx/Dockerfile -t shyammedh/django-notes-nginx:v1 infra/nginx
+docker push shyammedh/django-notes-backend:v1
+docker push shyammedh/django-notes-nginx:v1
+```
+
+```text
+shyammedh/django-notes-backend:v1
+shyammedh/django-notes-nginx:v1
 ```
 
 ## Jenkins Pipeline
@@ -192,11 +239,13 @@ In practice, Jenkins will:
 - run Django `check` and `test`
 - create `.env` from `.env.example` if needed
 - use the root `.env` file for database and Django settings during deployment
+- pull published Docker Hub images for `django` and `nginx`
 - redeploy containers with:
 
 ```bash
 docker-compose down || true
-docker-compose up -d --build
+docker-compose pull
+docker-compose up -d
 ```
 
 ### Jenkins build output
@@ -275,7 +324,7 @@ Root `.env` supports these values:
 ## Troubleshooting
 
 - If `localhost:8080` is busy, stop the conflicting process or change the published port in `docker-compose.yml`.
-- If the frontend looks outdated, rebuild with `docker compose up --build -d`.
+- If the frontend looks outdated, publish fresh images and then run `docker compose pull` followed by `docker compose up -d`.
 - If containers start but the app is unavailable, check `docker compose logs -f`.
 - If you want a completely fresh database volume, run `docker compose down -v` and then start again.
 - If Jenkins fails with `npm: not found`, install Node.js and npm on the `dard` agent.

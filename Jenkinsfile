@@ -65,12 +65,14 @@ pipeline {
                     if (isUnix()) {
                         sh '''
                         docker-compose down || true
-                        docker-compose up -d --build
+                        docker-compose pull
+                        docker-compose up -d
                         '''
                     } else {
                         bat '''
                         docker-compose down || true
-                        docker-compose up -d --build
+                        docker-compose pull
+                        docker-compose up -d
                         '''
                     }
                 }
