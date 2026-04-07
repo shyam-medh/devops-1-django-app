@@ -63,9 +63,15 @@ pipeline {
                     }
 
                     if (isUnix()) {
-                        sh 'docker compose up -d --build'
+                        sh '''
+                        docker-compose down || true
+                        docker-compose up -d --build
+                        '''
                     } else {
-                        bat 'docker compose up -d --build'
+                        bat '''
+                        docker-compose down || true
+                        docker-compose up -d --build
+                        '''
                     }
                 }
             }
