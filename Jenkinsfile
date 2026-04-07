@@ -63,9 +63,9 @@ pipeline {
                     }
 
                     if (isUnix()) {
-                        sh 'docker compose up --build -d'
+                        sh 'docker compose up -d --build'
                     } else {
-                        bat 'docker compose up --build -d'
+                        bat 'docker compose up -d --build'
                     }
                 }
             }
