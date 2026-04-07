@@ -1,6 +1,6 @@
 services:
   nginx:
-    image: ${DOCKERHUB_USERNAME:-local}/django-notes-nginx:${IMAGE_TAG:-latest}
+    image: ${DOCKERHUB_USERNAME:-local}/django-notes-nginx:${IMAGE_TAG:-v1}
     ports:
       - "8080:80"
     networks:
@@ -28,7 +28,7 @@ services:
       start_period: 60s
 
   django:
-    image: ${DOCKERHUB_USERNAME:-local}/django-notes-backend:${IMAGE_TAG:-latest}
+    image: ${DOCKERHUB_USERNAME:-local}/django-notes-backend:${IMAGE_TAG:-v1}
     command: sh -c "python manage.py migrate --no-input && python manage.py collectstatic --no-input && gunicorn notesapp.wsgi:application --bind 0.0.0.0:8000"
     ports:
       - "8000:8000"

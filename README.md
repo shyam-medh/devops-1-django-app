@@ -130,8 +130,10 @@ Set your Docker Hub namespace and image tag in the root `.env` file:
 
 ```env
 DOCKERHUB_USERNAME=your-dockerhub-username
-IMAGE_TAG=latest
+IMAGE_TAG=v1
 ```
+
+Using a fixed tag such as `v1` keeps deployments repeatable and avoids accidental drift from `latest`.
 
 To publish a new image version after code or Dockerfile changes, sign in, build each image, and push:
 

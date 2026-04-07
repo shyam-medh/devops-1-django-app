@@ -4,6 +4,8 @@ pipeline {
     environment {
         DJANGO_SECRET_KEY = 'jenkins-ci-secret-key'
         DEBUG = 'False'
+        DOCKERHUB_USERNAME = 'shyammedh'
+        IMAGE_TAG = 'v1'
     }
 
     stages {
