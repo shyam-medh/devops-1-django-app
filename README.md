@@ -10,7 +10,7 @@ A full-stack notes application built with Django REST Framework and React, packa
 |-- frontend/          React application source
 |-- infra/nginx/       Nginx image and reverse-proxy configuration
 |-- docker-compose.yml Multi-container local environment
-|-- Jenkinsfile        Basic CI/CD pipeline for frontend, backend, and container deployment
+|-- Jenkinsfile        Jenkins pipeline for build, test, and Docker deployment on the Jenkins agent
 |-- .env.example       Sample environment variables
 |-- README.md          Setup and run instructions
 ```
@@ -123,13 +123,22 @@ This repository already includes a Jenkins pipeline in `Jenkinsfile`.
 
 ### Jenkins prerequisites
 
-Your Jenkins agent should have:
+The current pipeline runs on the Jenkins agent label:
+
+```text
+dard
+```
+
+The Jenkins node or agent with this label should have:
 
 - Git
 - Python 3.9+
 - Node.js 18+
 - npm
-- Docker and Docker Compose
+- Docker
+- Docker Compose (`docker-compose`)
+- System packages required for `mysqlclient` on Linux:
+  `pkg-config`, `build-essential`, `default-libmysqlclient-dev`
 
 Useful note:
 
@@ -158,6 +167,12 @@ Jenkinsfile
 9. Save the job.
 10. Click `Build Now`.
 
+If you are using a Jenkins node setup with labels, make sure the job can run on the agent labeled `dard`, because the pipeline contains:
+
+```groovy
+agent { label 'dard' }
+```
+
 ### What the Jenkins pipeline does
 
 The pipeline runs these stages:
@@ -174,7 +189,13 @@ In practice, Jenkins will:
 - create a Python virtual environment
 - install backend dependencies from `backend/requirements.txt`
 - run Django `check` and `test`
-- deploy the project with `docker compose up --build -d`
+- create `.env` from `.env.example` if needed
+- redeploy containers with:
+
+```bash
+docker-compose down || true
+docker-compose up -d --build
+```
 
 ### Jenkins build output
 
@@ -255,6 +276,10 @@ Root `.env` supports these values:
 - If the frontend looks outdated, rebuild with `docker compose up --build -d`.
 - If containers start but the app is unavailable, check `docker compose logs -f`.
 - If you want a completely fresh database volume, run `docker compose down -v` and then start again.
+- If Jenkins fails with `npm: not found`, install Node.js and npm on the `dard` agent.
+- If Jenkins fails while installing `mysqlclient`, install `pkg-config`, `build-essential`, and `default-libmysqlclient-dev` on the agent.
+- If deployment fails after Django starts, inspect:
+  `docker-compose ps`, `docker-compose logs django`, `docker-compose logs nginx`, and `docker-compose logs db`
 
 ## Notes
 
