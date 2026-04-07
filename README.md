@@ -142,7 +142,8 @@ The Jenkins node or agent with this label should have:
 
 Useful note:
 
-- If `.env` is missing, the pipeline creates it from `.env.example` before deployment.
+- If the root `.env` file is missing, Jenkins copies `.env.example` to `.env` before deployment.
+- Make sure `.env.example` contains the values you want Jenkins to use.
 
 ### How to run this project from Jenkins
 
@@ -190,6 +191,7 @@ In practice, Jenkins will:
 - install backend dependencies from `backend/requirements.txt`
 - run Django `check` and `test`
 - create `.env` from `.env.example` if needed
+- use the root `.env` file for database and Django settings during deployment
 - redeploy containers with:
 
 ```bash
