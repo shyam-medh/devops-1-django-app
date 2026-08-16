@@ -56,3 +56,6 @@ accessKeys.csv
 # .tfvars files
 *.tfvars
 *.tfvars.json
+
+
+docs

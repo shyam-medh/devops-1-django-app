@@ -24,3 +24,9 @@ module "rds" {
 module "ecr" {
   source = "../../modules/ecr"
 }
+
+module "s3_frontend" {
+  source      = "../../modules/s3_frontend"
+  bucket_name = "django-notes-app-react-frontend"
+  environment = "prod"
+}

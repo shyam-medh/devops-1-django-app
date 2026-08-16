@@ -1,15 +1,23 @@
 pipeline {
-    agent {label 'dard'}
+    agent { label 'dard' }
 
     environment {
-        DJANGO_SECRET_KEY = 'jenkins-ci-secret-key'
-        DEBUG = 'False'
-        DOCKERHUB_USERNAME = 'shyammedh'
-        IMAGE_TAG = 'v1'
+        // AWS Configuration (Please update these with your actual AWS details)
+        AWS_REGION = 'us-east-1'
+        AWS_ACCOUNT_ID = 'YOUR_AWS_ACCOUNT_ID'
+        
+        // Resource Names (Must match your Terraform configurations)
+        S3_BUCKET_NAME = 'django-notes-app-react-frontend-prod'
+        ECR_REPO_NAME = 'django-notes-backend'
+        EKS_CLUSTER_NAME = 'django-notes-eks'
+        
+        // Dynamic Variables
+        IMAGE_TAG = "v${env.BUILD_ID}"
+        ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
     }
 
     stages {
-        stage('Build Frontend') {
+        stage('Build Frontend (React)') {
             steps {
                 dir('frontend') {
                     script {
@@ -25,57 +33,57 @@ pipeline {
             }
         }
 
-        stage('Install Backend Dependencies') {
+        stage('Deploy Frontend to AWS S3') {
             steps {
                 script {
+                    // This syncs the compiled React files directly to the S3 bucket, overriding old ones
                     if (isUnix()) {
-                        sh 'python3 -m venv .venv'
-                        sh '.venv/bin/python -m pip install -r backend/requirements.txt'
+                        sh "aws s3 sync frontend/build/ s3://${S3_BUCKET_NAME} --delete"
                     } else {
-                        bat 'python -m venv .venv'
-                        bat '.\\.venv\\Scripts\\python.exe -m pip install -r backend\\requirements.txt'
+                        bat "aws s3 sync frontend\\build\\ s3://${S3_BUCKET_NAME} --delete"
                     }
                 }
             }
         }
 
-        stage('Test Backend') {
+        stage('Build Backend (Django Docker Image)') {
             steps {
                 script {
                     if (isUnix()) {
-                        sh '.venv/bin/python backend/manage.py check'
-                        sh '.venv/bin/python backend/manage.py test'
+                        sh "docker build -t ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG} ./backend"
                     } else {
-                        bat '.\\.venv\\Scripts\\python.exe backend\\manage.py check'
-                        bat '.\\.venv\\Scripts\\python.exe backend\\manage.py test'
+                        bat "docker build -t ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG} .\\backend"
                     }
                 }
             }
         }
 
-        stage('Deploy Containers') {
+        stage('Push Backend to AWS ECR') {
             steps {
                 script {
-                    if (!fileExists('.env') && fileExists('.env.example')) {
-                        if (isUnix()) {
-                            sh 'cp .env.example .env'
-                        } else {
-                            bat 'copy /Y .env.example .env'
-                        }
-                    }
-
+                    // Authenticate Docker to AWS ECR, then push the newly built image
                     if (isUnix()) {
-                        sh '''
-                        docker-compose down || true
-                        docker-compose pull
-                        docker-compose up -d
-                        '''
+                        sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}"
+                        sh "docker push ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}"
                     } else {
-                        bat '''
-                        docker-compose down || true
-                        docker-compose pull
-                        docker-compose up -d
-                        '''
+                        bat "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}"
+                        bat "docker push ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}"
+                    }
+                }
+            }
+        }
+
+        stage('Deploy Backend to EKS (Helm)') {
+            steps {
+                script {
+                    // Configure kubectl for the EKS cluster, then run helm upgrade
+                    // We dynamically override the image repo and tag using the --set flag
+                    if (isUnix()) {
+                        sh "aws eks update-kubeconfig --name ${EKS_CLUSTER_NAME} --region ${AWS_REGION}"
+                        sh "helm upgrade --install django-backend infra/django-notes-app/django --set image.repository=${ECR_REGISTRY}/${ECR_REPO_NAME} --set image.tag=${IMAGE_TAG}"
+                    } else {
+                        bat "aws eks update-kubeconfig --name ${EKS_CLUSTER_NAME} --region ${AWS_REGION}"
+                        bat "helm upgrade --install django-backend infra\\django-notes-app\\django --set image.repository=${ECR_REGISTRY}/${ECR_REPO_NAME} --set image.tag=${IMAGE_TAG}"
                     }
                 }
             }
@@ -84,7 +92,7 @@ pipeline {
 
     post {
         always {
-            archiveArtifacts artifacts: 'frontend/build/**', allowEmptyArchive: true
+            echo "Pipeline complete. Check CloudFront for frontend updates and EKS for backend rollouts!"
         }
     }
 }
