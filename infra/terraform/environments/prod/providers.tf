@@ -4,7 +4,7 @@ terraform {
   # Run the code in `infra/terraform/bootstrap` first to generate your unique bucket name,
   # then replace `YOUR_UNIQUE_BUCKET_NAME_HERE` below with the output.
   backend "s3" {
-    bucket         = "YOUR_UNIQUE_BUCKET_NAME_HERE"
+    bucket         = "django-notes-app-terraform-state-215f80f7"
     key            = "prod/terraform.tfstate"
     region         = "ap-south-1"
     dynamodb_table = "django-notes-app-terraform-locks"
