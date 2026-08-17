@@ -10,7 +10,8 @@ const NotesListPage = () => {
   }, [])
 
   const getNotes = async () => {
-    const response = await fetch('/api/notes/')
+    const apiUrl = process.env.REACT_APP_API_URL || '';
+    const response = await fetch(`${apiUrl}/api/notes/`)
     const data = await response.json()
     setNote(data)
   }

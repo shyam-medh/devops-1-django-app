@@ -10,7 +10,8 @@ const NotePage = () => {
   useEffect(() => {
     const getNote = async () => {
       if (id === 'new') return
-      const response = await fetch(`/api/notes/${id}`)
+      const apiUrl = process.env.REACT_APP_API_URL || '';
+      const response = await fetch(`${apiUrl}/api/notes/${id}`)
       const data = await response.json()
       setNote(data)
     }
@@ -19,7 +20,8 @@ const NotePage = () => {
   }, [id])
 
   const createNote = async () => {
-    await fetch('/api/notes/create/', {
+    const apiUrl = process.env.REACT_APP_API_URL || '';
+    await fetch(`${apiUrl}/api/notes/create/`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -29,7 +31,8 @@ const NotePage = () => {
   }
 
   const updateNote = async () => {
-    await fetch(`/api/notes/${id}/update/`, {
+    const apiUrl = process.env.REACT_APP_API_URL || '';
+    await fetch(`${apiUrl}/api/notes/${id}/update/`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -39,7 +42,8 @@ const NotePage = () => {
   }
 
   const deleteNote = async () => {
-    await fetch(`/api/notes/${id}/delete/`, {
+    const apiUrl = process.env.REACT_APP_API_URL || '';
+    await fetch(`${apiUrl}/api/notes/${id}/delete/`, {
       method: 'DELETE',
     })
     navigate('/')
