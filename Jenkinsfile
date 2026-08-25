@@ -7,7 +7,7 @@ pipeline {
             spec:
               containers:
               - name: python
-                image: python:3.9-slim
+                image: python:3.9
                 command: [cat]
                 tty: true
                 resources:
