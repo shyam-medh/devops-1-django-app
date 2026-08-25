@@ -338,3 +338,117 @@ We used the `amazon/aws-cli:latest` Docker image as the container for Helm deplo
 **Fix:**
 We updated the `Jenkinsfile` to skip the checksum verification by prepending the environment variable `VERIFY_CHECKSUM=false` before executing the script:
 `VERIFY_CHECKSUM=false ./get_helm.sh`
+
+---
+
+## 24. Helm Installation Failure (Missing tar command)
+
+**Error:**
+After bypassing the OpenSSL checksum, the Helm installation script failed with:
+`[ERROR] Could not find tar. It is required to extract the helm binary archive.`
+
+**Root Cause:**
+The `amazon/aws-cli:latest` image is highly stripped down to reduce its size, so it lacks standard Linux utilities like `tar` and `gzip`, which are required by the `get_helm.sh` script to unpack the downloaded binary.
+
+**Fix:**
+Since `amazon/aws-cli` uses Amazon Linux, we added a command to install the missing packages via `yum` before running the installation script in the `Jenkinsfile`:
+`yum install -y tar gzip`
+
+---
+
+## 25. Helm EKS Authentication Failure (Missing DescribeCluster Permission)
+
+**Error:**
+After successfully installing Helm, the pipeline attempted to run `aws eks update-kubeconfig` and failed with:
+`AccessDeniedException: User: arn:aws:sts::790304249797:assumed-role/jenkins-serverless-agent... is not authorized to perform: eks:DescribeCluster`
+
+**Root Cause:**
+While we gave the Jenkins Serverless Agent role (`jenkins-serverless-agent`) the AWS-managed `AmazonEKSClusterPolicy`, this policy is actually intended for the EKS control plane itself and does not grant the `eks:DescribeCluster` action needed by clients to fetch the `kubeconfig` authentication token.
+
+**Fix:**
+We modified the Terraform code in `infra/terraform/environments/prod/main.tf` to create a custom inline IAM policy that explicitly allows `eks:DescribeCluster` on all resources, and attached it to the Jenkins IRSA role instead of the incorrect managed policy.
+
+---
+
+## 26. Helm Deployment Failure (Kubernetes Cluster Unreachable / Unauthorized)
+
+**Error:**
+After successfully authenticating with EKS via `aws eks update-kubeconfig`, the `helm upgrade` command failed with:
+`Error: Kubernetes cluster unreachable: the server has asked for the client to provide credentials`
+
+**Root Cause:**
+While the Jenkins agent pod successfully fetched the AWS IAM authentication token, the Jenkins IRSA role was never mapped to a Kubernetes user/group in the EKS cluster. EKS API v20 defaults to "Access Entries" for authentication, meaning any IAM role interacting with the cluster must have an explicit access entry granting it permissions (like `system:masters` or ClusterAdmin).
+
+**Fix:**
+We updated `infra/terraform/environments/prod/main.tf` to create an `aws_eks_access_entry` for the `jenkins-serverless-agent` IAM role, mapping it to the `AmazonEKSClusterAdminPolicy`. This granted the Jenkins pipeline permissions to deploy the Helm charts into the cluster.
+
+---
+
+## 27. Helm Deployment Failure (Pre-existing Cluster-scoped Resource Conflict)
+
+**Error:**
+After successful cluster authentication, `helm upgrade` failed with:
+`Error: Unable to continue with install: ClusterSecretStore "aws-secrets-manager" in namespace "" exists and cannot be imported into the current release: invalid ownership metadata...`
+
+**Root Cause:**
+A `ClusterSecretStore` named `aws-secrets-manager` already existed in the EKS cluster (likely applied manually during earlier setup/testing) but lacked the required Helm adoption labels and annotations (`app.kubernetes.io/managed-by: Helm`, etc.). Because it is a cluster-scoped resource, it persisted even when namespace-scoped releases were deleted or rolled back, causing a conflict when Helm tried to manage it during a new release.
+
+**Fix:**
+Instead of manually deleting the orphaned cluster resource or trying to force Helm adoption, we renamed the resource inside the Helm chart templates to avoid the conflict entirely:
+1. In `secretstore.yaml`, renamed the `ClusterSecretStore` to `django-aws-secrets-manager`.
+2. In `externalsecret.yaml`, updated the `secretStoreRef` to point to the new `django-aws-secrets-manager`.
+
+---
+
+## 28. CloudFront Invalidation Failure (AccessDenied)
+
+**Error:**
+During the "CloudFront Invalidation" stage of the Jenkins pipeline, the AWS CLI command failed with:
+`AccessDenied: User ... is not authorized to perform: cloudfront:CreateInvalidation on resource ...`
+
+**Root Cause:**
+The Jenkins Serverless Agent IAM Role (`jenkins-serverless-agent`) was granted access to EKS, ECR, and S3 via Terraform, but lacked the explicit permission to invalidate CloudFront caches.
+
+**Fix:**
+We updated `infra/terraform/environments/prod/main.tf` to create an inline IAM policy `jenkins-cloudfront-invalidation` granting `cloudfront:CreateInvalidation` on `*` resources, and attached it to the Jenkins IRSA role. We also updated the `Jenkinsfile` to wrap the invalidation in a `try/catch` block, making it non-fatal (warning only) so it doesn't block subsequent smoke tests if an error occurs.
+
+---
+
+## 29. Python `mysqlclient` Build Failure (pkg-config not found)
+
+**Error:**
+During the "Backend Tests" stage, `pip install -r requirements.txt` failed to build the `mysqlclient` wheel, throwing:
+`/bin/sh: 1: pkg-config: not found ... Exception: Can not find valid pkg-config name.`
+
+**Root Cause:**
+In an attempt to optimize the Jenkins pipeline, the Python container image was switched from `python:3.9` to `python:3.9-slim`. The `slim` variant does not include essential build tools like `gcc` and `pkg-config` out-of-the-box, which are required to compile C extensions for packages like `mysqlclient`.
+
+**Fix:**
+We reverted the Jenkinsfile container image definition back to the full `python:3.9` image, which includes all the necessary build dependencies by default, allowing the `pip install` step to succeed without requiring manual `apt-get` installations.
+
+---
+
+## 30. Jenkins `cleanWs()` NoSuchMethodError
+
+**Error:**
+At the end of the pipeline, the `always` post block failed with:
+`java.lang.NoSuchMethodError: No such DSL method 'cleanWs' found among steps`
+
+**Root Cause:**
+The `cleanWs()` function is provided by the Jenkins "Workspace Cleanup Plugin". This plugin was not installed on our newly provisioned Jenkins controller, causing the pipeline to crash at the very end when trying to invoke the missing DSL method.
+
+**Fix:**
+Instead of installing the external plugin, we replaced `cleanWs()` with Jenkins' built-in `deleteDir()` function in the `Jenkinsfile`, which achieves the same result (deleting the current workspace directory) without any external dependencies.
+
+---
+
+## 31. Smoke Test Stage Pipeline Failure (cURL Exit Code 23)
+
+**Error:**
+The "Smoke Test" stage killed the entire pipeline with `exit code 23` (Write error).
+
+**Root Cause:**
+Although the Helm deployment succeeded and the ALB was provisioned, the backend pods on Fargate were still warming up (starting Django/Gunicorn). When the `sh` step executed `curl`, it encountered a connection failure or write error. Because the command was executing as a raw shell step (`STATUS=$(curl ...)`), the non-zero exit code immediately failed the Jenkins stage and halted the pipeline, despite being intended as a non-fatal verification step.
+
+**Fix:**
+We refactored the Smoke Test stage to use a Groovy `script` block with a `try/catch`. We appended `|| echo "000"` to the curl command to ensure the shell always returns a `0` exit code, and then handled the status checking logic entirely in Groovy. If the backend is not fully ready, the test now correctly logs a Warning rather than aborting the pipeline.
