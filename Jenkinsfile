@@ -104,6 +104,9 @@ pipeline {
                     script {
                         // Note: The pod running this container MUST have AWS IAM permissions (IRSA) to update kubeconfig!
                         sh '''
+                            # Install tar and gzip (missing from amazon/aws-cli image)
+                            yum install -y tar gzip
+                            
                             # Install Helm dynamically in the AWS container
                             curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
                             chmod 700 get_helm.sh
