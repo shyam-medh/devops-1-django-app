@@ -49,6 +49,24 @@ module "efs" {
   allowed_security_group_ids = [module.eks.cluster_primary_security_group_id]
 }
 
+resource "aws_iam_policy" "jenkins_eks_access" {
+  name        = "jenkins-eks-access"
+  description = "Allow Jenkins to access EKS cluster config"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "eks:DescribeCluster",
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      },
+    ]
+  })
+}
+
 module "jenkins_irsa" {
   source                        = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
   version                       = "~> 5.0"
@@ -59,7 +77,7 @@ module "jenkins_irsa" {
   role_policy_arns = {
     AmazonEC2ContainerRegistryPowerUser = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
     AmazonS3FullAccess                  = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
-    AmazonEKSClusterPolicy              = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+    JenkinsEKSAccess                    = aws_iam_policy.jenkins_eks_access.arn
   }
 
   oidc_providers = {
