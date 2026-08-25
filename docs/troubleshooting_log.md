@@ -277,3 +277,49 @@ Without a stable custom domain name (e.g., `api.example.com`) mapped to the ALB 
 
 **Fix:**
 We restructured the Jenkins CI/CD pipeline to deploy the backend first. We added a pipeline stage that uses `kubectl get ingress` to fetch the dynamically generated AWS ALB DNS name from the cluster. This URL is then injected as the `REACT_APP_API_URL` environment variable into the subsequent React build step, before uploading the compiled static assets to the S3 bucket. Additionally, we removed the hardcoded host from the Helm `values.yaml` Ingress configuration, allowing the ALB to act as a "catch-all" route.
+
+---
+
+## 20. Python `mysqlclient` Installation Failure in Jenkins Serverless Agent
+
+**Error:**
+During the "Backend Tests" stage of the Jenkins pipeline, `pip install -r requirements.txt` failed with:
+`Exception: Can not find valid pkg-config name. Specify MYSQLCLIENT_CFLAGS and MYSQLCLIENT_LDFLAGS env vars manually`
+
+**Root Cause:**
+The `mysqlclient` Python package requires C compilers and MySQL headers to build the wheel. Because we migrated to a Serverless Jenkins agent using a pristine `python:3.9-slim` Docker image, the required system dependencies (`pkg-config`, `libmysqlclient-dev`, `build-essential`) were missing from the container environment.
+
+**Fix:**
+We updated the `Jenkinsfile` to dynamically install the system dependencies before running `pip install`:
+`apt-get update && apt-get install -y default-libmysqlclient-dev build-essential pkg-config`
+
+---
+
+## 21. Kaniko Image Push: 401 Unauthorized (Missing Credentials Config)
+
+**Error:**
+During the "Build & Push Django Image" stage, Kaniko failed to push the image to AWS ECR with `unexpected status code 401 Unauthorized: Not Authorized`.
+
+**Root Cause:**
+Even though the Jenkins agent had the correct IAM permissions to access ECR (via IRSA), Kaniko doesn't automatically know to use the AWS ECR Credential Helper. It requires explicit configuration to route ECR authentication through the credential helper baked into its executor image.
+
+**Fix:**
+We modified the `Jenkinsfile` to write a Docker configuration file (`/kaniko/.docker/config.json`) with `{"credsStore":"ecr-login"}` just before running the Kaniko build command. This forced Kaniko to use the AWS IAM role for authentication.
+
+---
+
+## 22. Kaniko Image Push: 401 Unauthorized (Missing Kubernetes Service Account Annotation)
+
+**Error:**
+Even after configuring the Kaniko `config.json`, the push to ECR still failed with a 401 error.
+
+**Root Cause:**
+The EKS Mutating Webhook only injects the AWS IRSA credentials (`AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`) into Pods whose Kubernetes Service Account is annotated with an IAM Role ARN. While we created the IAM role `jenkins-serverless-agent` via Terraform, we forgot to annotate the Kubernetes Service Accounts (`default` and `jenkins`) in the `jenkins` namespace. As a result, the Kaniko container was never injected with the AWS credentials.
+
+**Fix:**
+We annotated both Service Accounts using `kubectl`:
+```bash
+kubectl annotate sa default -n jenkins eks.amazonaws.com/role-arn=arn:aws:iam::790304249797:role/jenkins-serverless-agent
+kubectl annotate sa jenkins -n jenkins eks.amazonaws.com/role-arn=arn:aws:iam::790304249797:role/jenkins-serverless-agent
+```
+On the next pipeline run, EKS successfully injected the AWS token into the Kaniko container, allowing it to assume the role and push to ECR.
