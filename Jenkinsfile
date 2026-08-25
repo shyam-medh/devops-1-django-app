@@ -283,14 +283,21 @@ pipeline {
 
     post {
         success {
-            echo "Pipeline completed successfully!"
+            echo "✅ Pipeline completed successfully!"
         }
         failure {
-            echo "Pipeline FAILED. Check the stage logs above for details."
+            echo "❌ Pipeline FAILED. Check the stage logs above for details."
         }
         always {
             echo "Build #${env.BUILD_ID} finished — cleaning workspace."
-            deleteDir()
+            // deleteDir() fails on node_modules owned by root in the node container.
+            // Use shell rm -rf instead, which works regardless of file ownership.
+            container('node') {
+                sh 'rm -rf ${WORKSPACE}/frontend/node_modules || true'
+            }
+            container('jnlp') {
+                sh 'rm -rf ${WORKSPACE} || true'
+            }
         }
     }
 }
