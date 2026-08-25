@@ -57,5 +57,3 @@ mysql-data/
 *.tfvars
 *.tfvars.json
 
-
-docs
