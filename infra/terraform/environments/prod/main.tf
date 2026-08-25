@@ -48,3 +48,24 @@ module "efs" {
   subnet_ids                 = module.vpc.private_subnets
   allowed_security_group_ids = [module.eks.cluster_primary_security_group_id]
 }
+
+module "jenkins_irsa" {
+  source                        = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version                       = "~> 5.0"
+  role_name                     = "jenkins-serverless-agent"
+  attach_vpc_cni_policy         = false
+  
+  # Allow full ECR access to build and push images
+  role_policy_arns = {
+    AmazonEC2ContainerRegistryPowerUser = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
+    AmazonS3FullAccess                  = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+    AmazonEKSClusterPolicy              = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  }
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["jenkins:default", "jenkins:jenkins"]
+    }
+  }
+}
