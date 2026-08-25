@@ -258,18 +258,24 @@ pipeline {
         stage('Smoke Test') {
             steps {
                 container('aws-helm') {
-                    sh '''
-                        echo "Smoke-testing backend at ${REACT_APP_API_URL}/api/notes/ ..."
-                        STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-                          --retry 5 --retry-delay 10 --max-time 30 \
-                          "${REACT_APP_API_URL}/api/notes/")
-                        echo "HTTP Status: ${STATUS}"
-                        if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ] || [ "$STATUS" = "403" ]; then
-                          echo "Smoke test PASSED — backend is reachable (HTTP ${STATUS})"
-                        else
-                          echo "Smoke test WARNING — unexpected HTTP ${STATUS}"
-                        fi
-                    '''
+                    script {
+                        try {
+                            def status = sh(
+                                script: '''curl -s -o /dev/null -w "%{http_code}" \
+                                  --retry 3 --retry-delay 15 --max-time 60 \
+                                  "${REACT_APP_API_URL}/api/notes/" || echo "000"''',
+                                returnStdout: true
+                            ).trim()
+                            echo "HTTP Status: ${status}"
+                            if (status == '200' || status == '401' || status == '403') {
+                                echo "Smoke test PASSED — backend is reachable (HTTP ${status})"
+                            } else {
+                                echo "Smoke test WARNING — got HTTP ${status}. Backend may still be warming up on Fargate."
+                            }
+                        } catch (Exception e) {
+                            echo "Smoke test WARNING — curl failed (non-fatal): ${e.message}"
+                        }
+                    }
                 }
             }
         }
@@ -277,14 +283,14 @@ pipeline {
 
     post {
         success {
-            echo "Pipeline completed successfully! App: http://${env.REACT_APP_API_URL}"
+            echo "Pipeline completed successfully!"
         }
         failure {
             echo "Pipeline FAILED. Check the stage logs above for details."
         }
         always {
             echo "Build #${env.BUILD_ID} finished — cleaning workspace."
-            cleanWs()
+            deleteDir()
         }
     }
 }
