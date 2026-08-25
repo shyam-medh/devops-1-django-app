@@ -7,7 +7,7 @@ pipeline {
             spec:
               containers:
               - name: python
-                image: python:3.9-slim
+                image: python:3.9
                 command:
                 - cat
                 tty: true
@@ -23,6 +23,13 @@ pipeline {
                 args:
                 - 99d
                 tty: true
+                resources:
+                  requests:
+                    memory: "2Gi"
+                    cpu: "1000m"
+                  limits:
+                    memory: "2Gi"
+                    cpu: "1000m"
               - name: aws-helm
                 image: amazon/aws-cli:latest
                 command:
@@ -65,7 +72,6 @@ pipeline {
                 container('python') {
                     dir('backend') {
                         sh '''
-                            apt-get update && apt-get install -y default-libmysqlclient-dev build-essential pkg-config
                             pip install -r requirements.txt
                             python manage.py test
                         '''
@@ -85,6 +91,7 @@ pipeline {
                         /kaniko/executor --context `pwd`/backend \
                         --dockerfile `pwd`/backend/Dockerfile \
                         --destination ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG} \
+                        --cache=true \
                         --force
                     '''
                 }
