@@ -1,0 +1,291 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-sre-action
+  namespace: robusta
+data:
+  ai_sre_agent.py: |
+    import os
+    import json
+    import re
+    import subprocess
+    import logging
+    from datetime import datetime, timezone
+    from robusta.api import (
+        action,
+        Finding,
+        FindingSeverity,
+        FindingType,
+        MarkdownBlock,
+        PodEvent,
+        JobEvent,
+        PrometheusKubernetesAlert,
+        DeploymentEvent,
+        ReplicaSetEvent,
+        StatefulSetEvent,
+        DaemonSetEvent,
+    )
+
+    try:
+        import requests
+    except ImportError:
+        import urllib.request as requests
+
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+    GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    CONFIDENCE_THRESHOLD = 0.75
+    BLOCKED_VERBS = re.compile(r"\b(delete\s+node|drain|destroy|drop\s+database|rm\s+-rf\s+/)\b", re.IGNORECASE)
+    LOG_GROUP = "/aws/eks/django-notes/ai-sre-heal"
+
+    logger = logging.getLogger(__name__)
+
+    def _run(cmd, timeout=15):
+        """Run a shell command safely and return stdout."""
+        try:
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=timeout
+            )
+            return result.stdout.strip() or result.stderr.strip()
+        except Exception as e:
+            return f"[command error: {e}]"
+
+    def _collect_context(namespace: str, name: str, kind: str = "pod") -> dict:
+        """Collect full diagnostic context for any Kubernetes resource."""
+        ctx = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "resource_kind": kind,
+            "resource_name": name,
+            "namespace": namespace,
+        }
+
+        # Full YAML spec of the failing resource
+        ctx["resource_yaml"] = _run(f"kubectl get {kind} {name} -n {namespace} -o yaml")
+
+        # Recent events from the namespace
+        ctx["events"] = _run(
+            f"kubectl get events -n {namespace} --sort-by='.lastTimestamp' "
+            f"--field-selector involvedObject.name={name} -o wide"
+        )
+
+        # Namespace-wide events for broader context
+        ctx["namespace_events"] = _run(
+            f"kubectl get events -n {namespace} --sort-by='.lastTimestamp'"
+        )
+
+        # For pods — fetch logs from ALL containers (current + previous)
+        if kind == "pod":
+            ctx["logs_current"] = _run(
+                f"kubectl logs {name} -n {namespace} --all-containers --tail=100 2>&1"
+            )
+            ctx["logs_previous"] = _run(
+                f"kubectl logs {name} -n {namespace} --all-containers --tail=50 --previous 2>&1"
+            )
+        elif kind in ("deployment", "statefulset", "daemonset", "replicaset"):
+            # Get logs from owned pods
+            selector = _run(
+                f"kubectl get {kind} {name} -n {namespace} -o jsonpath='{{.spec.selector.matchLabels}}'"
+            )
+            pod_name = _run(
+                f"kubectl get pods -n {namespace} --selector='{selector}' -o jsonpath='{{.items[0].metadata.name}}' 2>/dev/null"
+            )
+            if pod_name:
+                ctx["logs_current"] = _run(
+                    f"kubectl logs {pod_name} -n {namespace} --all-containers --tail=100 2>&1"
+                )
+                ctx["logs_previous"] = _run(
+                    f"kubectl logs {pod_name} -n {namespace} --all-containers --tail=50 --previous 2>&1"
+                )
+
+        # Describe the resource (shows conditions, mounts, env, etc.)
+        ctx["describe"] = _run(f"kubectl describe {kind} {name} -n {namespace}")
+
+        # List all pods in namespace to see overall health
+        ctx["namespace_pod_status"] = _run(f"kubectl get pods -n {namespace} -o wide")
+
+        return ctx
+
+    def _call_gemini(context: dict) -> dict:
+        """Send full context to Gemini and get a structured JSON fix plan."""
+        prompt = f"""You are an elite Site Reliability Engineer (SRE) with deep expertise in Kubernetes, AWS EKS, and Django applications.
+
+A Kubernetes resource has failed in our cluster. Below is the COMPLETE diagnostic context.
+Your task is to:
+1. Diagnose the ROOT CAUSE precisely.
+2. Generate a sequence of kubectl/helm commands that will FIX the problem.
+3. Return a structured JSON response ONLY — no extra text, no markdown fences.
+
+=== DIAGNOSTIC CONTEXT ===
+{json.dumps(context, indent=2, default=str)}
+=== END CONTEXT ===
+
+Return ONLY this JSON structure (no markdown fences, no extra text):
+{{
+  "diagnosis": "One-paragraph precise root cause explanation",
+  "severity": "critical|high|medium|low",
+  "root_cause_category": "e.g. OOMKilled|ImagePullBackOff|CrashLoopBackOff|ConfigError|NetworkError|PVCError|IAMError|DatabaseError|Other",
+  "fix_commands": ["kubectl ...", "kubectl ...", "..."],
+  "safe_to_auto_execute": true,
+  "confidence": 0.0 to 1.0,
+  "post_fix_verification": "kubectl command to verify the fix worked",
+  "explanation": "Why each fix command addresses the root cause"
+}}
+
+RULES for fix_commands:
+- Only include commands that are SAFE and REVERSIBLE.
+- Set safe_to_auto_execute=false if any fix requires deleting critical data or draining nodes.
+- If you don't have enough context to be sure, set confidence < 0.75 and safe_to_auto_execute=false.
+- Prefer `kubectl rollout restart`, `kubectl patch`, `kubectl scale` over destructive commands.
+"""
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 2048,
+            },
+        }
+        try:
+            import requests as req
+            resp = req.post(GEMINI_URL, json=payload, timeout=30)
+            resp.raise_for_status()
+            raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            # Strip possible markdown fences
+            raw = re.sub(r"^```json\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+            return json.loads(raw)
+        except Exception as e:
+            logger.error(f"Gemini API call failed: {e}")
+            return {
+                "diagnosis": f"Gemini API error: {e}",
+                "severity": "unknown",
+                "fix_commands": [],
+                "safe_to_auto_execute": False,
+                "confidence": 0.0,
+            }
+
+    def _is_safe_command(cmd: str) -> bool:
+        """Block any command matching destructive patterns."""
+        return not BLOCKED_VERBS.search(cmd)
+
+    def _execute_fixes(fix_commands: list, confidence: float, safe: bool) -> list:
+        """Execute fix commands if they pass safety checks."""
+        results = []
+        if not safe or confidence < CONFIDENCE_THRESHOLD:
+            results.append(f"⚠️ Auto-execution SKIPPED — confidence={confidence:.0%}, safe={safe}. Manual review required.")
+            return results
+
+        for cmd in fix_commands:
+            if not _is_safe_command(cmd):
+                results.append(f"🚫 BLOCKED (destructive pattern): `{cmd}`")
+                continue
+            logger.info(f"AI-SRE executing: {cmd}")
+            output = _run(cmd, timeout=60)
+            results.append(f"✅ `{cmd}`\n```\n{output}\n```")
+
+        return results
+
+    def _build_finding(ctx: dict, gemini: dict, exec_results: list, resource_name: str) -> Finding:
+        """Build a Robusta Finding with full AI analysis."""
+        severity_map = {
+            "critical": FindingSeverity.HIGH,
+            "high": FindingSeverity.HIGH,
+            "medium": FindingSeverity.MEDIUM,
+            "low": FindingSeverity.LOW,
+        }
+        sev = severity_map.get(gemini.get("severity", "medium"), FindingSeverity.MEDIUM)
+        confidence_pct = f"{gemini.get('confidence', 0):.0%}"
+        finding = Finding(
+            title=f"🤖 AI-SRE: {resource_name} — {gemini.get('root_cause_category', 'Failure Detected')}",
+            source=FindingType.MANUAL,
+            severity=sev,
+        )
+        finding.add_enrichment([
+            MarkdownBlock(f"""## 🔍 AI Diagnosis (Confidence: {confidence_pct})
+{gemini.get('diagnosis', 'No diagnosis available.')}
+
+**Severity:** `{gemini.get('severity', 'unknown').upper()}`
+**Category:** `{gemini.get('root_cause_category', 'unknown')}`
+
+## 🛠️ Fix Explanation
+{gemini.get('explanation', 'N/A')}
+
+## ⚡ Execution Results
+{chr(10).join(exec_results) if exec_results else '_(no commands executed)_'}
+
+## ✅ Verification Command
+```
+{gemini.get('post_fix_verification', 'kubectl get pods -A')}
+```
+""")
+        ])
+        return finding
+
+    # ──────────────────────────────────────────────
+    # Robusta Action Triggers — all failure types
+    # ──────────────────────────────────────────────
+
+    @action
+    def ai_sre_pod_failure(event: PodEvent):
+        """Triggered on any pod failure/crash — sends full context to Gemini for diagnosis and auto-remediation."""
+        pod = event.get_pod()
+        if not pod:
+            return
+        name = pod.metadata.name
+        ns = pod.metadata.namespace
+        logger.info(f"AI-SRE: Analyzing pod failure — {ns}/{name}")
+
+        ctx = _collect_context(ns, name, kind="pod")
+        gemini = _call_gemini(ctx)
+        exec_results = _execute_fixes(
+            gemini.get("fix_commands", []),
+            gemini.get("confidence", 0.0),
+            gemini.get("safe_to_auto_execute", False),
+        )
+        event.add_enrichment([
+            MarkdownBlock("## 🤖 AI-SRE Auto-Heal Analysis\n*Powered by Gemini AI*")
+        ])
+        finding = _build_finding(ctx, gemini, exec_results, f"{ns}/{name}")
+        event.add_finding(finding)
+
+    @action
+    def ai_sre_job_failure(event: JobEvent):
+        """Triggered on job failure."""
+        job = event.get_job()
+        if not job:
+            return
+        name = job.metadata.name
+        ns = job.metadata.namespace
+        logger.info(f"AI-SRE: Analyzing job failure — {ns}/{name}")
+
+        ctx = _collect_context(ns, name, kind="job")
+        gemini = _call_gemini(ctx)
+        exec_results = _execute_fixes(
+            gemini.get("fix_commands", []),
+            gemini.get("confidence", 0.0),
+            gemini.get("safe_to_auto_execute", False),
+        )
+        finding = _build_finding(ctx, gemini, exec_results, f"{ns}/{name}")
+        event.add_finding(finding)
+
+    @action
+    def ai_sre_prometheus_alert(event: PrometheusKubernetesAlert):
+        """Triggered on ANY Prometheus alert — generic fallback for all other failure types."""
+        alert = event.get_alert()
+        labels = alert.labels if alert else {}
+        name = labels.get("pod") or labels.get("deployment") or labels.get("job_name") or "unknown"
+        ns = labels.get("namespace", "default")
+        kind = "pod" if labels.get("pod") else "deployment"
+
+        logger.info(f"AI-SRE: Analyzing Prometheus alert — {alert.name if alert else 'unknown'} in {ns}/{name}")
+
+        ctx = _collect_context(ns, name, kind=kind)
+        ctx["alert_name"] = alert.name if alert else "unknown"
+        ctx["alert_labels"] = labels
+        ctx["alert_description"] = labels.get("description", "")
+        gemini = _call_gemini(ctx)
+        exec_results = _execute_fixes(
+            gemini.get("fix_commands", []),
+            gemini.get("confidence", 0.0),
+            gemini.get("safe_to_auto_execute", False),
+        )
+        finding = _build_finding(ctx, gemini, exec_results, f"Alert:{ctx['alert_name']} {ns}/{name}")
+        event.add_finding(finding)

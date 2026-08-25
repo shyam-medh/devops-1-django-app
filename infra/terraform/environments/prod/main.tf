@@ -119,3 +119,8 @@ resource "aws_eks_access_policy_association" "jenkins_admin" {
     type = "cluster"
   }
 }
+
+resource "aws_iam_role_policy_attachment" "fargate_logging" {
+  role       = module.eks.fargate_profiles["app_profile"].iam_role_name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+}

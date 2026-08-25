@@ -1,0 +1,44 @@
+clusterName: django-notes-eks-prod
+isSmallCluster: true
+
+
+
+# webhook_sink: findings are POSTed as JSON — also logged to stdout → CloudWatch via Fluent Bit
+sinksConfig:
+  - webhook_sink:
+      name: ai_sre_cloudwatch_sink
+      url: "https://httpbin.org/post"
+      format: json
+
+playbookRepos:
+  ai_sre_actions:
+    url: "https://github.com/shyam-medh/devops-1-django-app.git"
+
+# Inject Gemini API key securely from Kubernetes Secret
+runner:
+  extraEnv:
+    - name: GEMINI_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: gemini-api-key
+          key: api_key
+
+# Trigger AI SRE on ALL failure types — no hardcoded logic, Gemini decides everything
+customPlaybooks:
+  # Pod failures: CrashLoopBackOff, OOMKilled, ImagePullBackOff, etc.
+  - triggers:
+      - on_pod_crash_loop: {}
+    actions:
+      - ai_sre_pod_failure: {}
+
+  # Job failures
+  - triggers:
+      - on_job_failure: {}
+    actions:
+      - ai_sre_job_failure: {}
+
+  # ALL Prometheus alerts — catch-all for node pressure, PVC, network, etc.
+  - triggers:
+      - on_prometheus_alert: {}
+    actions:
+      - ai_sre_prometheus_alert: {}

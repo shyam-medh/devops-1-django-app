@@ -33,6 +33,14 @@ module "eks" {
         }
       ]
     }
+    tools_profile = {
+      name = "tools-profile"
+      selectors = [
+        {
+          namespace = "robusta"
+        }
+      ]
+    }
   }
 
   enable_cluster_creator_admin_permissions = true

@@ -1,0 +1,35 @@
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: robusta-ai-sre-agent
+rules:
+  # Read everything - needed to collect full context
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  # Execute fixes - pods, deployments, statefulsets, jobs, daemonsets
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "namespaces", "services", "endpoints", "persistentvolumeclaims", "events", "configmaps", "replicationcontrollers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: robusta-ai-sre-agent-binding
+subjects:
+  - kind: ServiceAccount
+    name: robusta-runner-service-account
+    namespace: robusta
+roleRef:
+  kind: ClusterRole
+  name: robusta-ai-sre-agent
+  apiGroup: rbac.authorization.k8s.io
