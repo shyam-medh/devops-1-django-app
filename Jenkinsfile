@@ -77,8 +77,11 @@ pipeline {
         stage('Build & Push Django Image (Kaniko)') {
             steps {
                 container('kaniko') {
-                    // Kaniko does NOT use docker daemon. It builds and pushes directly!
+                    // Kaniko does NOT use docker daemon, but it needs the AWS ECR credential helper configured
                     sh '''
+                        mkdir -p /kaniko/.docker
+                        echo '{"credsStore":"ecr-login"}' > /kaniko/.docker/config.json
+                        
                         /kaniko/executor --context `pwd`/backend \
                         --dockerfile `pwd`/backend/Dockerfile \
                         --destination ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG} \
