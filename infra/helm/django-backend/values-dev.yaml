@@ -1,0 +1,13 @@
+# Development Values
+
+replicaCount: 1
+
+autoscaling:
+  enabled: false
+
+ingress:
+  hosts:
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix

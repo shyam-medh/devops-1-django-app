@@ -38,6 +38,11 @@ COPY --from=builder /install /usr/local
 
 COPY . .
 
+# Collect static files at build time so they're always present
+RUN SECRET_KEY=build-time-placeholder \
+    DB_HOST=localhost DB_NAME=x DB_USER=x DB_PASSWORD=x \
+    python manage.py collectstatic --noinput
+
 EXPOSE 8000
 
 CMD ["gunicorn", "notesapp.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "120"]

@@ -1,0 +1,17 @@
+# Production Values
+
+replicaCount: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+ingress:
+  hosts:
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix

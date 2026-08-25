@@ -1,0 +1,16 @@
+{
+    "spec": {
+        "template": {
+            "spec": {
+                "tolerations": [
+                    {
+                        "key": "eks.amazonaws.com/compute-type",
+                        "operator": "Equal",
+                        "value": "fargate",
+                        "effect": "NoSchedule"
+                    }
+                ]
+            }
+        }
+    }
+}

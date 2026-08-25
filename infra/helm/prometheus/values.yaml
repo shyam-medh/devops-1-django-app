@@ -1,0 +1,44 @@
+coreDns:
+  enabled: true
+kubeControllerManager:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+# Disable Node Exporter because Fargate doesn't support DaemonSets
+nodeExporter:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    # Disable rules evaluating node metrics since node-exporter is disabled
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+
+grafana:
+  enabled: true
+  adminPassword: "password123"
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+  ingress:
+    enabled: true
+    ingressClassName: alb
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+    hosts:
+      - "" # Catch-all
+    path: /

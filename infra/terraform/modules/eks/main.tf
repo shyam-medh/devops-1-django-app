@@ -3,7 +3,7 @@ module "eks" {
   version = "~> 20.0"
 
   cluster_name    = var.cluster_name
-  cluster_version = "1.30"
+  cluster_version = var.cluster_version
 
   cluster_endpoint_public_access = true
 
@@ -13,14 +13,23 @@ module "eks" {
 
   # Fargate profiles
   fargate_profiles = {
-    default = {
-      name = "default"
+    app_profile = {
+      name = "django-app"
       selectors = [
         {
-          namespace = "default"
+          namespace = "django"
         },
         {
           namespace = "kube-system"
+        },
+        {
+          namespace = "external-secrets"
+        },
+        {
+          namespace = "jenkins"
+        },
+        {
+          namespace = "monitoring"
         }
       ]
     }
