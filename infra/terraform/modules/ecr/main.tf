@@ -4,6 +4,7 @@ module "ecr_django" {
 
   repository_name = "django-notes-backend"
 
+  repository_force_delete = true
   repository_image_tag_mutability = "IMMUTABLE"
 
   repository_lifecycle_policy = jsonencode({
@@ -33,6 +34,7 @@ module "ecr_jenkins_agent" {
 
   repository_name = "jenkins-agent-aws"
 
+  repository_force_delete = true
   repository_image_tag_mutability = "MUTABLE"
 
   repository_lifecycle_policy = jsonencode({
