@@ -323,3 +323,18 @@ kubectl annotate sa default -n jenkins eks.amazonaws.com/role-arn=arn:aws:iam::7
 kubectl annotate sa jenkins -n jenkins eks.amazonaws.com/role-arn=arn:aws:iam::790304249797:role/jenkins-serverless-agent
 ```
 On the next pipeline run, EKS successfully injected the AWS token into the Kaniko container, allowing it to assume the role and push to ECR.
+
+---
+
+## 23. Helm Installation Failure (Missing OpenSSL for Checksum)
+
+**Error:**
+During the "Deploy Backend to EKS (Helm)" stage in the Jenkins pipeline, the Helm installation script failed with:
+`In order to verify checksum, openssl must first be installed. Please install openssl or set VERIFY_CHECKSUM=false in your environment.`
+
+**Root Cause:**
+We used the `amazon/aws-cli:latest` Docker image as the container for Helm deployment. This image is based on Amazon Linux and does not include `openssl` by default, which the `get_helm.sh` script relies on to verify the checksum of the downloaded Helm binary.
+
+**Fix:**
+We updated the `Jenkinsfile` to skip the checksum verification by prepending the environment variable `VERIFY_CHECKSUM=false` before executing the script:
+`VERIFY_CHECKSUM=false ./get_helm.sh`
