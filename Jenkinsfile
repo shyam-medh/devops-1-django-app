@@ -119,7 +119,6 @@ pipeline {
                           --context    $(pwd)/backend \\
                           --dockerfile $(pwd)/backend/Dockerfile \\
                           --destination ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG} \\
-                          --destination ${ECR_REGISTRY}/${ECR_REPO_NAME}:latest \\
                           --cache=true \\
                           --cache-repo  ${ECR_REGISTRY}/${ECR_REPO_NAME}/cache \\
                           --compressed-caching=false \\
