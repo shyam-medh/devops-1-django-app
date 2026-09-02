@@ -162,6 +162,7 @@ pipeline {
                                   -f infra/helm/django-backend/values-prod.yaml \\
                                   --set image.repository=${ECR_REGISTRY}/${ECR_REPO_NAME} \\
                                   --set image.tag=${IMAGE_TAG} \\
+                                  --reuse-values \\
                                   --namespace django --create-namespace \\
                                   --timeout 10m --wait --atomic
                             """
