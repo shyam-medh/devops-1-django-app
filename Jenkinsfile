@@ -83,13 +83,12 @@ pipeline {
 
     stages {
 
-        // ── STAGE 1: SAST (mocked) ────────────────────────────────────────────
+        // ── STAGE 1: SAST ────────────────────────────────────────────
         stage('DevSecOps: Code Scan (SAST)') {
             steps {
                 container('python') {
-                    echo "Running SAST checks (Bandit/Checkov/GitLeaks mocked)..."
-                    // Uncomment to enable real scans:
-                    // sh 'pip install --quiet bandit && bandit -r backend/ -ll'
+                    echo "Running SAST checks (Bandit)..."
+                    sh 'pip install --quiet bandit && bandit -r backend/ -ll'
                 }
             }
         }
