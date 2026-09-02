@@ -125,3 +125,17 @@ resource "aws_iam_role_policy_attachment" "fargate_logging" {
   role       = module.eks.fargate_profiles["app_profile"].iam_role_name
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
 }
+
+module "albc_irsa" {
+  source                                 = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version                                = "~> 5.0"
+  role_name                              = "aws-load-balancer-controller"
+  attach_load_balancer_controller_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
+    }
+  }
+}

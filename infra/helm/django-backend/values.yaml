@@ -6,7 +6,7 @@
 replicaCount: 2
 
 image:
-  repository: 790304249797.dkr.ecr.ap-south-1.amazonaws.com/django-notes-backend
+  repository: 197136686449.dkr.ecr.ap-south-1.amazonaws.com/django-notes-backend
   pullPolicy: Always
   # Default tag — Jenkins overrides this on every build via:
   #   helm upgrade --set image.tag=${IMAGE_TAG}
