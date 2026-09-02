@@ -19,3 +19,13 @@ controller:
 persistence:
   enabled: true
   existingClaim: efs-claim
+
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::197136686449:role/jenkins-serverless-agent"
+
+serviceAccountAgent:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::197136686449:role/jenkins-serverless-agent"
