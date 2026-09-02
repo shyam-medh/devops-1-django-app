@@ -28,11 +28,11 @@ module "ecr" {
   source = "../../modules/ecr"
 }
 
-# module "s3_frontend" {
-#   source      = "../../modules/s3_frontend"
-#   bucket_name = "django-notes-app-react-frontend"
-#   environment = "prod"
-# }
+module "s3_frontend" {
+  source      = "../../modules/s3_frontend"
+  bucket_name = "django-notes-app-react-frontend"
+  environment = "prod"
+}
 
 module "secrets" {
   source            = "../../modules/secrets"
@@ -68,21 +68,21 @@ resource "aws_iam_policy" "jenkins_eks_access" {
   })
 }
 
-# resource "aws_iam_policy" "jenkins_cloudfront_invalidation" {
-#   name        = "jenkins-cloudfront-invalidation"
-#   description = "Allow Jenkins to invalidate CloudFront distributions"
+resource "aws_iam_policy" "jenkins_cloudfront_invalidation" {
+  name        = "jenkins-cloudfront-invalidation"
+  description = "Allow Jenkins to invalidate CloudFront distributions"
 
-#   policy = jsonencode({
-#     Version = "2012-10-17"
-#     Statement = [
-#       {
-#         Action   = ["cloudfront:CreateInvalidation"]
-#         Effect   = "Allow"
-#         Resource = "*"
-#       },
-#     ]
-#   })
-# }
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action   = ["cloudfront:CreateInvalidation", "cloudfront:ListDistributions"]
+        Effect   = "Allow"
+        Resource = "*"
+      },
+    ]
+  })
+}
 
 module "jenkins_irsa" {
   source                        = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
@@ -95,7 +95,7 @@ module "jenkins_irsa" {
     AmazonEC2ContainerRegistryPowerUser = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
     AmazonS3FullAccess                  = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
     JenkinsEKSAccess                    = aws_iam_policy.jenkins_eks_access.arn
-    # JenkinsCloudfrontInvalidation       = aws_iam_policy.jenkins_cloudfront_invalidation.arn
+    JenkinsCloudfrontInvalidation       = aws_iam_policy.jenkins_cloudfront_invalidation.arn
   }
 
   oidc_providers = {
