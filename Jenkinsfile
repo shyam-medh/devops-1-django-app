@@ -71,7 +71,7 @@ pipeline {
 
     environment {
         AWS_REGION                 = 'ap-south-1'
-        AWS_ACCOUNT_ID             = '790304249797'
+        AWS_ACCOUNT_ID             = '197136686449'
         S3_BUCKET_NAME             = 'django-notes-app-react-frontend-prod'
         ECR_REPO_NAME              = 'django-notes-backend'
         EKS_CLUSTER_NAME           = 'django-notes-eks-prod'
