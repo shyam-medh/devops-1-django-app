@@ -12,7 +12,17 @@ sinksConfig:
 
 playbookRepos:
   ai_sre_actions:
+    # Robusta pulls the action files from this Git URL.
+    # It looks for Python files in the repo root OR in the path specified.
+    # Our ai_sre_agent.py lives at: infra/kubernetes/ai-sre-agent/ai_sre_agent.py
+    # Robusta needs the directory — use the subfolder URL format.
     url: "https://github.com/shyam-medh/devops-1-django-app.git"
+    branch: main
+    # Tell Robusta where inside the repo to find the Python action files
+    pip_install: false
+    # The path inside the repo that contains the action .py files
+    # Robusta will import all .py files from this directory
+    github_url: "https://raw.githubusercontent.com/shyam-medh/devops-1-django-app/main/infra/kubernetes/ai-sre-agent/"
 
 # Inject Gemini API key securely from Kubernetes Secret
 runner:
@@ -23,11 +33,16 @@ runner:
           name: gemini-api-key
           key: api_key
 
-# Trigger AI SRE on ALL failure types — no hardcoded logic, Gemini decides everything
 customPlaybooks:
-  # Pod failures: CrashLoopBackOff, OOMKilled, ImagePullBackOff, etc.
+  # Pod failures: CrashLoopBackOff, ImagePullBackOff, general crashes
   - triggers:
       - on_pod_crash_loop: {}
+    actions:
+      - ai_sre_pod_failure: {}
+
+  # OOMKilled is a separate trigger from crash_loop in Robusta
+  - triggers:
+      - on_pod_oom_killed: {}
     actions:
       - ai_sre_pod_failure: {}
 
@@ -37,7 +52,7 @@ customPlaybooks:
     actions:
       - ai_sre_job_failure: {}
 
-  # ALL Prometheus alerts — catch-all for node pressure, PVC, network, etc.
+  # ALL Prometheus alerts — catch-all for node pressure, PVC, network, high error rate, etc.
   - triggers:
       - on_prometheus_alert: {}
     actions:

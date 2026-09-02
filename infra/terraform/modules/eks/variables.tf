@@ -6,3 +6,8 @@ variable "cluster_version" {
   description = "Kubernetes version for EKS cluster"
   default     = "1.31"
 }
+variable "aws_region" {
+  type        = string
+  description = "AWS region — required for the CoreDNS Fargate patch provisioner"
+  default     = "ap-south-1"
+}

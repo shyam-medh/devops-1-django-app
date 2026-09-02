@@ -1,0 +1,80 @@
+{{- /*
+  Django DB Migrations — Helm Post-Install / Post-Upgrade Hook
+  ============================================================
+  This Job runs automatically after every `helm install` or `helm upgrade`.
+  It executes `python manage.py migrate --noinput` inside a temporary pod
+  that is identical to the main Django pod (same image, same env vars, same
+  DB credentials from the ExternalSecret).
+
+  Why a Helm hook instead of an init container?
+  - Init containers run on EVERY pod restart, including during autoscaling
+    events and node replacements. Running migrations on every restart is
+    dangerous and slow.
+  - A post-install hook runs EXACTLY ONCE per deploy, which is the correct
+    semantics for a migration job.
+
+  The hook pod is automatically deleted 120 seconds after completion so it
+  doesn't clutter `kubectl get pods` output.
+*/ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "django-backend.fullname" . }}-migrate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "django-backend.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    # Run this Job automatically after helm install AND helm upgrade
+    "helm.sh/hook": post-install,post-upgrade
+    # If a previous migration job is still running, wait for it to finish
+    # before running the new one — prevents concurrent migrations
+    "helm.sh/hook-weight": "0"
+    # Clean up the completed Job pod 120 seconds after it finishes
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  # Retry up to 3 times if the migration fails (e.g. DB not ready yet)
+  backoffLimit: 3
+  # Kill the job if it runs for more than 10 minutes
+  activeDeadlineSeconds: 600
+  # Auto-delete the Job object itself 5 minutes after completion
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "django-backend.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+      annotations:
+        # Required for AWS EKS Fargate — without this the pod stays Pending
+        eks.amazonaws.com/compute-type: fargate
+    spec:
+      # Never restart on failure — let the Job's backoffLimit handle retries
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - python
+            - manage.py
+            - migrate
+            - --noinput
+          # Inject the same env vars as the main Django deployment so the
+          # migration job connects to the same DB with the same credentials
+          env:
+            {{- toYaml .Values.env | nindent 12 }}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          # Mount the tmp volume — required because the Django image runs as
+          # a non-root user with a read-only root filesystem
+          volumeMounts:
+            - name: tmp-vol
+              mountPath: /tmp
+      volumes:
+        - name: tmp-vol
+          emptyDir: {}

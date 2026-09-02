@@ -5,6 +5,10 @@ controller:
     - git
     - configuration-as-code
   serviceType: ClusterIP
+  # Required for AWS EKS Fargate — without this annotation the pod
+  # is never picked up by the Fargate scheduler and stays Pending forever.
+  podAnnotations:
+    eks.amazonaws.com/compute-type: fargate
   resources:
     requests:
       cpu: "1000m"

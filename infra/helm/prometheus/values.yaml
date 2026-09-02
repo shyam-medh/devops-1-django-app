@@ -22,6 +22,35 @@ prometheus:
     serviceMonitorSelectorNilUsesHelmValues: false
     podMonitorSelectorNilUsesHelmValues: false
     probeSelectorNilUsesHelmValues: false
+    # Enough resources so Fargate provisions 0.5 vCPU / 2GB (next Fargate tier)
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+    # Give Prometheus more time to start before probe kicks in
+    podMetadata:
+      annotations:
+        eks.amazonaws.com/compute-type: fargate
+    # Relax startup probe — Fargate cold-start is slow
+    startupProbeInitialDelaySeconds: 30
+
+  # Expose Prometheus UI via ALB (same as Grafana)
+  ingress:
+    enabled: true
+    ingressClassName: alb
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+    hosts:
+      - ""
+    paths:
+      - /
+
+
+
 
 grafana:
   enabled: true
