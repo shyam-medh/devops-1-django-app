@@ -215,15 +215,15 @@ resource "helm_release" "django_backend" {
         },
         {
           name  = "CORS_ALLOW_ALL_ORIGINS"
-          value = "False"
+          value = "True"
         },
         {
           name  = "CORS_ALLOWED_ORIGINS"
-          value = "http://localhost"
+          value = "http://localhost,http://${module.s3_frontend.website_endpoint}"
         },
         {
           name  = "CSRF_TRUSTED_ORIGINS"
-          value = "http://localhost"
+          value = "http://localhost,http://${module.s3_frontend.website_endpoint}"
         }
       ]
     })

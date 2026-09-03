@@ -1,341 +1,334 @@
-# Django Notes App
+# Django Notes App — Production DevOps Project
 
-A full-stack notes application built with Django REST Framework and React, packaged with Docker Compose, proxied by Nginx, and backed by MySQL.
+A full-stack notes application built with **Django REST Framework** and **React**, deployed on **AWS EKS** with a complete production-grade DevOps pipeline including automated CI/CD, container-native builds, Kubernetes orchestration, centralized monitoring, and fully automated infrastructure as code.
 
-## Project Hierarchy
+---
+
+## 🏗️ Architecture Overview
+
+```
+                        ┌─────────────────────────────────────────────┐
+                        │                AWS Cloud                     │
+                        │                                              │
+  Browser ──────────► S3 Static Website (React Frontend)              │
+                        │                                              │
+  Browser ──────────► AWS ALB (Ingress)                               │
+                        │         │                                    │
+                        │         ▼                                    │
+                        │   EKS Fargate Cluster                        │
+                        │   ┌─────────────────────────┐               │
+                        │   │  Django Namespace        │               │
+                        │   │  └─ Django Backend Pod   │               │
+                        │   │                          │               │
+                        │   │  Jenkins Namespace        │               │
+                        │   │  └─ Jenkins Controller   │               │
+                        │   │  └─ Ephemeral Agent Pods │               │
+                        │   │                          │               │
+                        │   │  Monitoring Namespace    │               │
+                        │   │  └─ Prometheus           │               │
+                        │   │  └─ Grafana              │               │
+                        │   └─────────────────────────┘               │
+                        │         │                                    │
+                        │         ▼                                    │
+                        │   RDS MySQL 8 (Private Subnet)               │
+                        └─────────────────────────────────────────────┘
+```
+
+---
+
+## 🛠️ Tech Stack
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| **Frontend** | React 18 | Single-page notes application |
+| **Backend** | Django 4 + DRF | REST API server |
+| **Database** | AWS RDS MySQL 8 | Persistent relational database |
+| **Container Orchestration** | AWS EKS (Fargate) | Serverless Kubernetes cluster |
+| **CI/CD** | Jenkins | Automated build and deployment pipeline |
+| **Image Building** | Kaniko | Daemonless in-cluster Docker image builds |
+| **Infrastructure as Code** | Terraform | Fully automated cloud provisioning |
+| **Package Manager (K8s)** | Helm | Kubernetes application deployments |
+| **Container Registry** | AWS ECR | Private Docker image registry |
+| **Frontend Hosting** | AWS S3 | Static website hosting |
+| **CDN** | AWS CloudFront | Content delivery and cache invalidation |
+| **Secrets Management** | AWS Secrets Manager + External Secrets Operator | Secure credential injection into pods |
+| **Ingress Controller** | AWS Load Balancer Controller | Kubernetes → ALB provisioning |
+| **Persistent Storage** | AWS EFS | Shared storage for Jenkins workspace |
+| **Monitoring** | Prometheus + Grafana | Cluster and application metrics |
+| **Security Scanning** | Bandit (SAST) | Static code vulnerability analysis |
+| **Identity** | IRSA (IAM Roles for Service Accounts) | Keyless AWS access from Kubernetes pods |
+| **CDN (Planned)** | AWS CloudFront | Cache invalidation IAM role provisioned; distribution pending |
+
+---
+
+## 📁 Project Structure
 
 ```text
 .
-|-- backend/           Django project, API app, Python dependencies, backend Dockerfile
-|-- frontend/          React application source
-|-- infra/nginx/       Nginx image and reverse-proxy configuration
-|-- docker-compose.yml Multi-container local environment
-|-- Jenkinsfile        Jenkins pipeline for build, test, and Docker deployment on the Jenkins agent
-|-- .env.example       Sample environment variables
-|-- README.md          Setup and run instructions
+├── backend/                        Django REST Framework application
+│   ├── notesapp/                   Core app (models, views, serializers, settings)
+│   ├── manage.py
+│   ├── requirements.txt
+│   └── Dockerfile                  Multi-stage production Docker image
+│
+├── frontend/                       React 18 single-page application
+│   ├── src/
+│   └── package.json
+│
+├── infra/
+│   ├── terraform/
+│   │   ├── environments/
+│   │   │   └── prod/               Terraform root module (entry point)
+│   │   │       ├── main.tf         Module composition (VPC, EKS, RDS, ECR, S3, EFS, Secrets)
+│   │   │       ├── helm.tf         Helm releases (Jenkins, ALB Controller, ESO, Prometheus, Grafana)
+│   │   │       ├── providers.tf    AWS + Kubernetes + Helm provider configuration
+│   │   │       ├── variables.tf    Input variable declarations
+│   │   │       ├── terraform.tfvars Variable values (DO NOT commit real credentials)
+│   │   │       └── outputs.tf      Exported values (cluster endpoint, RDS host, etc.)
+│   │   └── modules/
+│   │       ├── vpc/                VPC, public/private subnets, NAT Gateway, route tables
+│   │       ├── eks/                EKS cluster, Fargate profiles, OIDC provider, node security groups
+│   │       ├── rds/                RDS MySQL instance, subnet group, security group
+│   │       ├── ecr/                ECR repositories for backend and Jenkins agent images
+│   │       ├── s3_frontend/        S3 bucket for React static website
+│   │       ├── efs/                EFS file system for Jenkins persistent storage
+│   │       └── secrets/            AWS Secrets Manager secret + External Secrets IRSA
+│   │
+│   ├── helm/
+│   │   ├── django-backend/         Helm chart for the Django REST API
+│   │   │   ├── templates/          Deployment, Service, Ingress, HPA manifests
+│   │   │   └── values-prod.yaml    Production overrides
+│   │   ├── jenkins/                Helm values for Jenkins (Kubernetes plugin configured)
+│   │   ├── prometheus/             Helm values for Prometheus
+│   │   └── grafana/                Helm values for Grafana
+│   │
+│   └── docker/
+│       └── jenkins-agent-aws/      Custom Jenkins agent image (aws-cli + helm + kubectl)
+│
+├── docs/
+│   ├── architecture_flow.md        Detailed architecture and data flow documentation
+│   ├── implementation_plan.md      Project implementation plan and decisions
+│   └── troubleshooting_log.md      Real-world issues encountered and resolutions
+│
+├── Jenkinsfile                     Full declarative CI/CD pipeline definition
+└── README.md
 ```
 
-## Stack
+---
 
-- Django 4 + Django REST Framework
-- React 18
-- MySQL 8
-- Gunicorn
-- Nginx
-- Docker Compose
+## 🔄 CI/CD Pipeline (Jenkins)
 
-## Architecture
+The pipeline is fully declarative, runs inside the EKS cluster using **ephemeral Kubernetes agent pods**, and follows a strict **Build → Test → Scan → Deploy** workflow.
 
-`Browser -> Nginx -> Django -> MySQL`
+### Agent Pods
 
-Services started by Compose:
+Each pipeline run spins up a single pod with 4 containers:
 
-- `nginx`: public entrypoint on `http://localhost:8080`
-- `django`: Django app on `http://localhost:8000`
-- `db`: MySQL database inside the Docker network
+| Container | Image | Role |
+|---|---|---|
+| `python` | `python:3.9` | Backend testing and SAST scanning |
+| `node` | `node:18-alpine` | React frontend build |
+| `kaniko` | `gcr.io/kaniko-project/executor` | Daemonless Docker image build + ECR push |
+| `aws-helm` | `amazon/aws-cli` | EKS kubeconfig, Helm deploy, S3 sync, CloudFront |
 
-## Prerequisites
+### Pipeline Stages
 
-For the recommended Docker workflow:
+```
+Stage 1: DevSecOps: Code Scan (SAST)
+   └─ Bandit scans the backend/ directory for security vulnerabilities
 
-- Docker Desktop
-- Docker Compose
+Stage 2: Backend Tests
+   └─ pip install → django manage.py test
 
-For optional local development without Docker:
+Stage 3: Build & Push Django Image (Kaniko)
+   └─ Builds Docker image from backend/Dockerfile
+   └─ Tags with Git SHA + Build ID: <sha>-<build_id>
+   └─ Pushes to AWS ECR with layer caching
 
-- Python 3.9+
-- Node.js 18+
-- npm
+Stage 4: Deploy Backend to EKS (Helm)
+   └─ helm upgrade --install django-backend
+   └─ Atomic deploy with 10m timeout
+   └─ Auto-rollback on failure via helm rollback
 
-## Quick Start
+Stage 5: Fetch ALB DNS Name
+   └─ Waits for ALB to provision (60s)
+   └─ kubectl get ingress → extracts ALB hostname
+   └─ Sets REACT_APP_API_URL env var for the React build
 
-### 1. Clone the repository
+Stage 6: Build React Frontend
+   └─ npm install → npm run build
+   └─ API URL baked into the build at compile time
+
+Stage 7: Deploy Frontend to S3
+   └─ aws s3 sync with --delete flag (removes stale files)
+   └─ index.html set to no-cache for instant updates
+   └─ Static assets set to 1-year cache for performance
+
+Stage 8: CloudFront Invalidation
+   └─ aws cloudfront create-invalidation --paths '/*'
+   └─ Non-fatal — pipeline continues if CloudFront is not set up
+
+Stage 9: Smoke Test
+   └─ curl GET /api/notes/ with retry logic
+   └─ Accepts HTTP 200, 401, or 403 as "passing"
+   └─ Non-fatal warning on failure — Fargate cold starts can delay readiness
+```
+
+---
+
+## ☁️ Infrastructure (Terraform)
+
+All infrastructure is provisioned via Terraform with a **modular architecture** and **remote state** stored in S3 with DynamoDB locking.
+
+### Modules
+
+| Module | What it creates |
+|---|---|
+| `vpc` | VPC (10.0.0.0/16), public/private subnets across 2 AZs, NAT Gateway, Internet Gateway, route tables |
+| `eks` | EKS Cluster (Fargate), OIDC provider, cluster security groups, CloudWatch log group, KMS key for secret encryption |
+| `rds` | MySQL 8 RDS instance in private subnet, DB subnet group, security group (only accessible from EKS pods) |
+| `ecr` | Two ECR repos: `django-notes-backend` and `jenkins-agent-aws` |
+| `s3_frontend` | S3 bucket configured as a static website |
+| `efs` | EFS file system mounted into the Jenkins pod for persistent workspace storage |
+| `secrets` | AWS Secrets Manager secret for DB credentials + IRSA role for External Secrets Operator |
+
+### Helm Releases (via Terraform `helm.tf`)
+
+| Release | Chart | Namespace |
+|---|---|---|
+| `aws-load-balancer-controller` | EKS Charts | `kube-system` |
+| `external-secrets` | External Secrets | `external-secrets` |
+| `jenkins` | Jenkins (official) | `jenkins` |
+| `prometheus` | Prometheus Community | `monitoring` |
+| `grafana` | Grafana | `monitoring` |
+| `django-backend` | Local chart | `django` |
+
+### IAM & Security (IRSA)
+
+IRSA (IAM Roles for Service Accounts) ensures pods never need static AWS credentials:
+
+| IRSA Role | Permissions | Used by |
+|---|---|---|
+| `jenkins-serverless-agent` | ECR Power User, S3 Full Access, EKS Describe, CloudFront Invalidation | Jenkins agent pods |
+| `aws-load-balancer-controller` | ALB/NLB provisioning | ALB Controller pods |
+| `external-secrets` | Secrets Manager read | ESO pods |
+
+---
+
+## 🔐 Secrets Flow
+
+```
+Terraform → AWS Secrets Manager (db credentials)
+         ↓
+External Secrets Operator
+         ↓
+Kubernetes Secret (django-backend-db-secret)
+         ↓
+Django Pod (env vars: DB_HOST, DB_NAME, DB_USER, DB_PASSWORD)
+```
+
+No secrets are ever hardcoded in container images or Kubernetes manifests.
+
+---
+
+## 📊 Monitoring
+
+- **Prometheus** scrapes Kubernetes node/pod metrics from the EKS cluster.
+- **Grafana** is connected to Prometheus as a data source and exposed via ALB ingress.
+- Both are deployed via Helm into the `monitoring` namespace on a dedicated Fargate profile.
+
+---
+
+## 🚀 How to Deploy (From Scratch)
+
+### Prerequisites
+
+- AWS CLI (`aws configure` with admin-level permissions)
+- Terraform >= 1.3.0
+- `kubectl`
+- `helm`
+
+### Step 1 — Provision Infrastructure
 
 ```bash
-git clone https://github.com/shyam-medh/devops-1-django-app.git
-cd devops-1-django-app
+cd infra/terraform/environments/prod
+terraform init
+terraform apply -auto-approve
 ```
 
-### 2. Create the environment file
+This provisions: VPC → EKS → RDS → ECR → S3 → EFS → Secrets → Helm Releases (Jenkins, ALB Controller, ESO, Prometheus, Grafana, Django).
 
-Docker Compose has defaults, but using a local `.env` file is clearer for new contributors.
+Expected time: **~20–25 minutes**.
+
+### Step 2 — Configure kubectl
 
 ```bash
-cp .env.example .env
+aws eks update-kubeconfig --region ap-south-1 --name django-notes-eks-prod
 ```
 
-Example values:
+### Step 3 — Trigger the Jenkins Pipeline
 
-```env
-DB_NAME=test_db
-DB_USER=root
-DB_PASSWORD=root
-DB_PORT=3306
-DB_HOST=db
-DEBUG=False
-DJANGO_SECRET_KEY=change-me
-```
+1. Get the Jenkins ALB URL from Terraform outputs or:
+   ```bash
+   kubectl get ingress -n jenkins
+   ```
+2. Open Jenkins in the browser, log in (initial admin password from the Jenkins pod logs).
+3. Create a pipeline job pointing to this repository with `Jenkinsfile` as the script path.
+4. Click **Build Now**.
 
-### 3. Pull and start the project
+Jenkins will automatically:
+- Run SAST security scan
+- Run Django unit tests
+- Build and push the Docker image to ECR via Kaniko
+- Deploy the Django backend to EKS via Helm
+- Build the React frontend with the correct backend URL
+- Sync the frontend to S3
+- Invalidate CloudFront cache
+
+### Step 4 — Access the Application
+
+| Service | How to get the URL |
+|---|---|
+| **Frontend** | S3 Static Website Endpoint (from AWS Console or Terraform output) |
+| **Backend API** | `kubectl get ingress -n django` → ALB hostname |
+| **Grafana** | `kubectl get ingress -n monitoring` → ALB hostname |
+| **Jenkins** | `kubectl get ingress -n jenkins` → ALB hostname |
+
+---
+
+## 💥 Destroy Infrastructure
 
 ```bash
-docker compose pull
-docker compose up -d
+# Step 1: Empty the S3 frontend bucket first (required before Terraform can delete it)
+aws s3 rm s3://django-notes-app-react-frontend-prod --recursive
+
+# Step 2: Destroy all Terraform-managed resources
+cd infra/terraform/environments/prod
+terraform destroy -auto-approve
 ```
 
-What this does:
-
-- pulls the published backend and nginx images from Docker Hub
-- starts MySQL, Django, and Nginx
-- runs Django migrations automatically
-- collects static files automatically
-
-### 4. Open the app
-
-- Main app: `http://localhost:8080`
-- Django directly: `http://localhost:8000`
-- Django admin: `http://localhost:8080/admin/`
-
-### 5. Stop the project
-
-```bash
-docker compose down
-```
-
-## Useful Docker Commands
-
-```bash
-docker compose ps
-docker compose logs -f
-docker compose exec django sh
-docker compose exec django python manage.py createsuperuser
-docker compose run --rm django python manage.py check
-```
-
-Refresh to the latest published images:
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
-## Push Images To Docker Hub
-
-This project builds two publishable images:
-
-- `django`: the Django app image with the built React frontend included
-- `nginx`: the reverse-proxy image
-
-Set your Docker Hub namespace and image tag in the root `.env` file:
-
-```env
-DOCKERHUB_USERNAME=your-dockerhub-username
-IMAGE_TAG=v1
-```
-
-Using a fixed tag such as `v1` keeps deployments repeatable and avoids accidental drift from `latest`.
-
-To publish a new image version after code or Dockerfile changes, sign in, build each image, and push:
-
-```bash
-docker login
-docker build -f backend/Dockerfile -t <DOCKERHUB_USERNAME>/django-notes-backend:<IMAGE_TAG> .
-docker build -f infra/nginx/Dockerfile -t <DOCKERHUB_USERNAME>/django-notes-nginx:<IMAGE_TAG> infra/nginx
-docker push <DOCKERHUB_USERNAME>/django-notes-backend:<IMAGE_TAG>
-docker push <DOCKERHUB_USERNAME>/django-notes-nginx:<IMAGE_TAG>
-```
-
-The pushed image names will be:
-
-```text
-docker.io/<DOCKERHUB_USERNAME>/django-notes-backend:<IMAGE_TAG>
-docker.io/<DOCKERHUB_USERNAME>/django-notes-nginx:<IMAGE_TAG>
-```
-
-Example:
-
-```bash
-docker build -f backend/Dockerfile -t shyammedh/django-notes-backend:v1 .
-docker build -f infra/nginx/Dockerfile -t shyammedh/django-notes-nginx:v1 infra/nginx
-docker push shyammedh/django-notes-backend:v1
-docker push shyammedh/django-notes-nginx:v1
-```
-
-```text
-shyammedh/django-notes-backend:v1
-shyammedh/django-notes-nginx:v1
-```
-
-## Jenkins Pipeline
-
-This repository already includes a Jenkins pipeline in `Jenkinsfile`.
-
-### Jenkins prerequisites
-
-The current pipeline runs on the Jenkins agent label:
-
-```text
-dard
-```
-
-The Jenkins node or agent with this label should have:
-
-- Git
-- Python 3.9+
-- Node.js 18+
-- npm
-- Docker
-- Docker Compose (`docker-compose`)
-- System packages required for `mysqlclient` on Linux:
-  `pkg-config`, `build-essential`, `default-libmysqlclient-dev`
-
-Useful note:
-
-- If the root `.env` file is missing, Jenkins copies `.env.example` to `.env` before deployment.
-- Make sure `.env.example` contains the values you want Jenkins to use.
-
-### How to run this project from Jenkins
-
-1. Open Jenkins.
-2. Create a new item.
-3. Choose `Pipeline` as the job type.
-4. In the job configuration, select `Pipeline script from SCM`.
-5. Choose `Git` as the SCM.
-6. Add your repository URL:
-
-```text
-https://github.com/shyam-medh/devops-1-django-app.git
-```
-
-7. Select the branch you want Jenkins to build.
-8. Set `Script Path` to:
-
-```text
-Jenkinsfile
-```
-
-9. Save the job.
-10. Click `Build Now`.
-
-If you are using a Jenkins node setup with labels, make sure the job can run on the agent labeled `dard`, because the pipeline contains:
-
-```groovy
-agent { label 'dard' }
-```
-
-### What the Jenkins pipeline does
-
-The pipeline runs these stages:
-
-1. `Build Frontend`
-2. `Install Backend Dependencies`
-3. `Test Backend`
-4. `Deploy Containers`
-
-In practice, Jenkins will:
-
-- install frontend dependencies in `frontend/`
-- build the React app
-- create a Python virtual environment
-- install backend dependencies from `backend/requirements.txt`
-- run Django `check` and `test`
-- create `.env` from `.env.example` if needed
-- use the root `.env` file for database and Django settings during deployment
-- pull published Docker Hub images for `django` and `nginx`
-- redeploy containers with:
-
-```bash
-docker-compose down || true
-docker-compose pull
-docker-compose up -d
-```
-
-### Jenkins build output
-
-The pipeline archives the built frontend files from:
-
-```text
-frontend/build/
-```
-
-You can download them from the Jenkins job after a successful build.
-
-## Local Development Without Docker
-
-### Backend
-
-```bash
-python -m venv .venv
-```
-
-Activate the virtual environment:
-
-```bash
-# Windows PowerShell
-.venv\Scripts\activate
-
-# macOS / Linux
-source .venv/bin/activate
-```
-
-Then install and run the backend:
-
-```bash
-pip install -r backend/requirements.txt
-python backend/manage.py migrate
-python backend/manage.py runserver
-```
-
-Notes:
-
-- If `DB_NAME` is not set, Django falls back to SQLite.
-- Static files are collected into `backend/staticfiles/`.
-
-### Frontend
-
-In a second terminal:
-
-```bash
-cd frontend
-npm install
-npm start
-```
-
-The React dev server proxies API requests to `http://127.0.0.1:8000`.
-
-If you want Django to serve the built frontend instead of the React dev server:
-
-```bash
-cd frontend
-npm install
-npm run build
-```
-
-## Environment Variables
-
-Root `.env` supports these values:
-
-- `DB_NAME`
-- `DB_USER`
-- `DB_PASSWORD`
-- `DB_PORT`
-- `DB_HOST`
-- `DEBUG`
-- `DJANGO_SECRET_KEY`
-
-## Troubleshooting
-
-- If `localhost:8080` is busy, stop the conflicting process or change the published port in `docker-compose.yml`.
-- If the frontend looks outdated, publish fresh images and then run `docker compose pull` followed by `docker compose up -d`.
-- If containers start but the app is unavailable, check `docker compose logs -f`.
-- If you want a completely fresh database volume, run `docker compose down -v` and then start again.
-- If Jenkins fails with `npm: not found`, install Node.js and npm on the `dard` agent.
-- If Jenkins fails while installing `mysqlclient`, install `pkg-config`, `build-essential`, and `default-libmysqlclient-dev` on the agent.
-- If deployment fails after Django starts, inspect:
-  `docker-compose ps`, `docker-compose logs django`, `docker-compose logs nginx`, and `docker-compose logs db`
-
-## Notes
-
-- `frontend/build/` is generated output and should not be committed.
-- MySQL is available only inside the Docker network.
-- Nginx is exposed on port `8080` to avoid conflicts with services already using port `80`.
+> **Note:** The Terraform state S3 bucket (`django-notes-app-terraform-state-...`) and DynamoDB lock table (`django-notes-app-terraform-locks`) are intentionally **not** destroyed by `terraform destroy`. Delete them manually if you want a completely clean AWS account.
+
+---
+
+## 🛠️ Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| `terraform destroy` hangs on VPC/Subnets | EKS-provisioned ALBs are orphaned. Delete them manually: `aws elbv2 describe-load-balancers` → `aws elbv2 delete-load-balancer --arn <ARN>`, then re-run destroy. |
+| S3 bucket deletion fails | Empty it first: `aws s3 rm s3://<bucket-name> --recursive` |
+| Terraform state locked | `terraform force-unlock <LOCK_ID>` |
+| Jenkins pods stuck in `Pending` | Fargate profile may not match the pod's namespace/labels. Check: `kubectl describe pod <pod> -n jenkins` |
+| Django pods not connecting to RDS | Check that External Secrets Operator synced the secret: `kubectl get secret django-backend-db-secret -n django` |
+| Smoke test returns `000` | Fargate cold start — pods take 60–90s to reach `Running`. Re-run the pipeline or wait. |
+| CloudFront invalidation fails | Distribution ID in `Jenkinsfile` may be outdated or CloudFront is not set up. Stage is non-fatal and the pipeline will still succeed. |
+
+---
+
+## 📝 Notes
+
+- `frontend/build/` is generated output — do not commit it to git.
+- `terraform.tfvars` contains the DB password — add it to `.gitignore` and never commit it.
+- Image tags follow the format `<git-short-sha>-<jenkins-build-id>` for full traceability.
+- EKS uses **Fargate** (serverless) — there are no EC2 nodes to manage or patch.
+- Kaniko builds Docker images directly inside the Kubernetes pod without requiring Docker daemon access, making it fully compatible with Fargate.
