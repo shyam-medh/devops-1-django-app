@@ -5,6 +5,7 @@ pipeline {
             apiVersion: v1
             kind: Pod
             spec:
+              serviceAccountName: jenkins-agent
               containers:
               - name: python
                 image: python:3.9
