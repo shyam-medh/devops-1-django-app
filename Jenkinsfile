@@ -77,8 +77,9 @@ pipeline {
         AWS_REGION                 = 'ap-south-1'
         AWS_ACCOUNT_ID             = '197136686449'
         S3_BUCKET_NAME             = 'django-notes-app-react-frontend-prod'
-        ECR_REPO_NAME              = 'django-notes-backend'
         EKS_CLUSTER_NAME           = 'django-notes-eks-prod'
+        // CLOUDFRONT_DISTRIBUTION_ID = 'E38UXJBMVV63Z0'
+        ECR_REPO_NAME              = 'django-notes-backend'
         GIT_COMMIT_SHA             = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
         IMAGE_TAG                  = "${GIT_COMMIT_SHA}-${env.BUILD_ID}"
         ECR_REGISTRY               = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -241,7 +242,23 @@ pipeline {
             }
         }
 
-        // ── STAGE 8: SMOKE TEST ───────────────────────────────────────────────
+        // ── STAGE 8: CLOUDFRONT INVALIDATION (non-fatal) ─────────────────────
+        // stage('CloudFront Invalidation') {
+        //     steps {
+        //         container('aws-helm') {
+        //             script {
+        //                 try {
+        //                     sh "aws cloudfront create-invalidation --distribution-id ${CLOUDFRONT_DISTRIBUTION_ID} --paths '/*'"
+        //                     echo "CloudFront invalidation triggered successfully!"
+        //                 } catch (Exception e) {
+        //                     echo "WARNING: CloudFront invalidation failed (non-fatal) — ${e.message}"
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
+
+        // ── STAGE 9: SMOKE TEST ───────────────────────────────────────────────
         stage('Smoke Test') {
             steps {
                 container('aws-helm') {
