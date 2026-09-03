@@ -13,8 +13,8 @@ pipeline {
                 tty: true
                 resources:
                   requests:
-                    memory: "512Mi"
-                    cpu: "250m"
+                    memory: "256Mi"
+                    cpu: "100m"
                   limits:
                     memory: "512Mi"
                     cpu: "500m"
@@ -24,8 +24,8 @@ pipeline {
                 tty: true
                 resources:
                   requests:
-                    memory: "512Mi"
-                    cpu: "250m"
+                    memory: "256Mi"
+                    cpu: "100m"
                   limits:
                     memory: "1Gi"
                     cpu: "500m"
@@ -36,8 +36,8 @@ pipeline {
                 tty: true
                 resources:
                   requests:
-                    memory: "2Gi"
-                    cpu: "1000m"
+                    memory: "1Gi"
+                    cpu: "500m"
                   limits:
                     memory: "2Gi"
                     cpu: "1000m"
@@ -50,8 +50,8 @@ pipeline {
                 tty: true
                 resources:
                   requests:
-                    memory: "512Mi"
-                    cpu: "250m"
+                    memory: "256Mi"
+                    cpu: "100m"
                   limits:
                     memory: "512Mi"
                     cpu: "500m"
