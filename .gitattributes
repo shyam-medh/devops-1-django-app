@@ -1,0 +1,11 @@
+# Force GitHub Linguist to include infrastructure code in language statistics
+*.tf linguist-detectable=true
+*.tfvars linguist-detectable=true
+*.hcl linguist-detectable=true
+*.yaml linguist-detectable=true
+*.yml linguist-detectable=true
+*.json linguist-detectable=true
+*.md linguist-detectable=true
+*.sh linguist-detectable=true
+Jenkinsfile linguist-detectable=true
+Dockerfile linguist-detectable=true
