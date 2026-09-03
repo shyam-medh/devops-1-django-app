@@ -101,7 +101,7 @@ module "jenkins_irsa" {
   oidc_providers = {
     main = {
       provider_arn               = module.eks.oidc_provider_arn
-      namespace_service_accounts = ["jenkins:default", "jenkins:jenkins"]
+      namespace_service_accounts = ["jenkins:default", "jenkins:jenkins", "jenkins:jenkins-agent"]
     }
   }
 }

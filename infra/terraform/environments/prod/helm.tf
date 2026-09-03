@@ -38,10 +38,11 @@ resource "helm_release" "aws_load_balancer_controller" {
   chart      = "aws-load-balancer-controller"
   namespace  = "kube-system"
   wait       = true
+  timeout    = 600
 
   set {
     name  = "clusterName"
-    value = data.aws_eks_cluster.cluster.name
+    value = module.eks.cluster_name
   }
 
   set {
@@ -80,6 +81,7 @@ resource "helm_release" "external_secrets" {
   chart      = "external-secrets"
   namespace  = kubernetes_namespace.external_secrets.metadata[0].name
   wait       = true
+  timeout    = 600
 
   set {
     name  = "installCRDs"
@@ -88,6 +90,11 @@ resource "helm_release" "external_secrets" {
 
   set {
     name  = "webhook.create"
+    value = "false"
+  }
+
+  set {
+    name  = "certController.create"
     value = "false"
   }
 

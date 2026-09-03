@@ -25,3 +25,7 @@ output "oidc_provider_arn" {
 output "fargate_profiles" {
   value = module.eks.fargate_profiles
 }
+
+output "cluster_certificate_authority_data" {
+  value = module.eks.cluster_certificate_authority_data
+}
