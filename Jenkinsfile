@@ -11,6 +11,9 @@ pipeline {
                 image: python:3.9
                 command: [cat]
                 tty: true
+                env:
+                  - name: PYTHONDONTWRITEBYTECODE
+                    value: "1"
                 resources:
                   requests:
                     memory: "256Mi"
