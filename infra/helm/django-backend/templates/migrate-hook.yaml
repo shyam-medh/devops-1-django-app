@@ -61,8 +61,15 @@ spec:
             - --noinput
           # Inject the same env vars as the main Django deployment so the
           # migration job connects to the same DB with the same credentials
+          envFrom:
+            - configMapRef:
+                name: django-config
           env:
-            {{- toYaml .Values.env | nindent 12 }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "django-backend-db-secret"
+                  key: password
           resources:
             requests:
               cpu: 100m

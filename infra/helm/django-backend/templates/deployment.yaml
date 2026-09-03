@@ -32,20 +32,6 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      initContainers:
-        - name: run-migrations
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["python", "manage.py", "migrate"]
-          envFrom:
-            - configMapRef:
-                name: django-config
-          env:
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: "django-backend-db-secret"
-                  key: password
       containers:
         - name: {{ .Chart.Name }}
           {{- with .Values.securityContext }}
