@@ -10,21 +10,8 @@ sinksConfig:
       url: "https://httpbin.org/post"
       format: json
 
-playbookRepos:
-  ai_sre_actions:
-    # Robusta pulls the action files from this Git URL.
-    # It looks for Python files in the repo root OR in the path specified.
-    # Our ai_sre_agent.py lives at: infra/kubernetes/ai-sre-agent/ai_sre_agent.py
-    # Robusta needs the directory — use the subfolder URL format.
-    url: "https://github.com/shyam-medh/devops-1-django-app.git"
-    branch: main
-    # Tell Robusta where inside the repo to find the Python action files
-    pip_install: false
-    # The path inside the repo that contains the action .py files
-    # Robusta will import all .py files from this directory
-    github_url: "https://raw.githubusercontent.com/shyam-medh/devops-1-django-app/main/infra/kubernetes/ai-sre-agent/"
+# playbookRepos removed in favor of direct ConfigMap mount
 
-# Inject Gemini API key securely from Kubernetes Secret
 runner:
   extraEnv:
     - name: GEMINI_API_KEY
@@ -32,6 +19,13 @@ runner:
         secretKeyRef:
           name: gemini-api-key
           key: api_key
+  extraVolumes:
+    - name: ai-sre-action
+      configMap:
+        name: ai-sre-action
+  extraVolumeMounts:
+    - name: ai-sre-action
+      mountPath: /etc/robusta/playbooks/storage/ai_sre_actions
 
 customPlaybooks:
   # Pod failures: CrashLoopBackOff, ImagePullBackOff, general crashes

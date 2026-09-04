@@ -177,67 +177,7 @@ resource "helm_release" "kube_prometheus_stack" {
   ]
 }
 
-resource "helm_release" "django_backend" {
-  name       = "django-backend"
-  chart      = "../../../helm/django-backend"
-  namespace  = kubernetes_namespace.django.metadata[0].name
-  wait       = true
-  timeout    = 300
 
-  values = [
-    yamlencode({
-      env = [
-        {
-          name  = "DB_HOST"
-          value = split(":", module.rds.db_instance_endpoint)[0]
-        },
-        {
-          name  = "DB_PORT"
-          value = "3306"
-        },
-        {
-          name  = "DB_NAME"
-          value = "notes_db"
-        },
-        {
-          name  = "DB_USER"
-          value = "notes_app"
-        },
-        {
-          name = "DB_PASSWORD"
-          valueFrom = {
-            secretKeyRef = {
-              name = "django-backend-db-secret"
-              key  = "password"
-            }
-          }
-        },
-        {
-          name  = "ALLOWED_HOSTS"
-          value = "*"
-        },
-        {
-          name  = "DEBUG"
-          value = "False"
-        },
-        {
-          name  = "CORS_ALLOW_ALL_ORIGINS"
-          value = "True"
-        },
-        {
-          name  = "CORS_ALLOWED_ORIGINS"
-          value = "http://localhost,http://${module.s3_frontend.website_endpoint}"
-        },
-        {
-          name  = "CSRF_TRUSTED_ORIGINS"
-          value = "http://localhost,http://${module.s3_frontend.website_endpoint}"
-        }
-      ]
-    })
-  ]
-
-  depends_on = [helm_release.external_secrets]
-}
 
 # ------------------------------------------------------------------------------
 # 3. Raw Manifests (CRDs & Ingress) via null_resource
@@ -257,3 +197,17 @@ kubectl apply -f ../../../helm/jenkins/jenkins-ingress.yaml
 EOT
   }
 }
+
+resource "helm_release" "robusta" {
+  name       = "robusta"
+  repository = "https://robusta-charts.storage.googleapis.com"
+  chart      = "robusta"
+  namespace  = kubernetes_namespace.robusta.metadata[0].name
+  wait       = true
+  timeout    = 600
+
+  values = [
+    file("../../../helm/robusta-values.yaml")
+  ]
+}
+

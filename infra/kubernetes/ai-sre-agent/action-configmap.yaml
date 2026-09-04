@@ -1,291 +1,669 @@
 apiVersion: v1
+data:
+  __init__.py: "from .ai_sre_agent import *"
+  ai_sre_agent.py: "# =============================================================================\n#
+    AI SRE AGENT ╬ô├ç├╢ Gemini-Powered Kubernetes Self-Healing (Dynamic + Production-Grade)\n#
+    =============================================================================\n#
+    NOTE: This file runs INSIDE the Robusta runner container in the cluster.\n# The
+    `robusta.api` module is pre-installed in that container image.\n# Any \"Cannot
+    find module robusta.api\" IDE errors are EXPECTED false positives.\n#\n# Architecture
+    ╬ô├ç├╢ Two-Phase AI Reasoning Loop:\n#\n#   Phase 1 (Diagnose):\n#     Gemini receives
+    broad diagnostic context and identifies the root cause\n#     category (OOMKilled,
+    ImagePullBackOff, DatabaseError, etc.) plus a\n#     list of additional data it
+    needs to confirm the diagnosis.\n#\n#   Phase 2 (Fix):\n#     The agent automatically
+    collects the extra data Gemini requested\n#     (specific resource limits, ECR
+    image tags, secret values, network\n#     tests, etc.) and sends it back to Gemini
+    for a targeted, specific fix.\n#     Gemini now generates the EXACT kubectl patch
+    payload for THIS failure,\n#     not a generic restart.\n#\n# Safety:\n#   - ALLOWLIST:
+    only safe kubectl verbs are auto-executed.\n#   - For human-approval fixes (e.g.
+    complex patches), ALL suggested commands\n#     are surfaced in the Finding so
+    the operator can copy-paste them.\n#   - Jobs are NEVER auto-remediated.\n# =============================================================================\n\nimport
+    os\nimport json\nimport re\nimport subprocess\nimport logging\nfrom datetime import
+    datetime, timezone\nfrom robusta.api import (\n    action,\n    Finding,\n    FindingSeverity,\n
+    \   FindingType,\n    MarkdownBlock,\n    PodEvent,\n    JobEvent,\n    PrometheusKubernetesAlert,\n)\n\ntry:\n
+    \   import requests as _req\nexcept ImportError:\n    _req = None\n\n# ---------------------------------------------------------------------------\n#
+    Configuration\n# ---------------------------------------------------------------------------\nGEMINI_API_KEY
+    = os.environ.get(\"GEMINI_API_KEY\", \"\")\nGEMINI_MODEL   = \"gemini-1.5-flash\"\nGEMINI_URL
+    \    = (\n    f\"https://generativelanguage.googleapis.com/v1beta/models/\"\n
+    \   f\"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}\"\n)\n\n# Confidence
+    threshold for auto-execution\nAUTO_EXECUTE_CONFIDENCE_THRESHOLD = 0.90\n\n# ---------------------------------------------------------------------------\n#
+    STRICT ALLOWLIST ╬ô├ç├╢ commands the agent may auto-execute without human approval\n#
+    ---------------------------------------------------------------------------\n#
+    These are SAFE and FULLY REVERSIBLE operations. Anything not in this list\n# is
+    surfaced to the human operator as a \"ready to run\" command but never\n# executed
+    autonomously.\nSAFE_AUTO_EXECUTE_PREFIXES = (\n    \"kubectl rollout restart\",\n
+    \   \"kubectl rollout undo\",\n    \"kubectl scale\",\n    \"kubectl annotate\",\n
+    \   \"kubectl label\",\n)\n\n# These verbs are ALLOWED in Gemini's suggestions
+    (shown to human) but\n# never auto-executed ╬ô├ç├╢ they make structural changes.\nHUMAN_APPROVAL_PREFIXES
+    = (\n    \"kubectl patch\",\n    \"kubectl set image\",\n    \"kubectl set env\",\n
+    \   \"kubectl set resources\",\n)\n\nALL_ALLOWED_PREFIXES = SAFE_AUTO_EXECUTE_PREFIXES
+    + HUMAN_APPROVAL_PREFIXES\n\nlogger = logging.getLogger(__name__)\n\n\n# ---------------------------------------------------------------------------\n#
+    Helpers\n# ---------------------------------------------------------------------------\n\ndef
+    _run(cmd: str, timeout: int = 20) -> str:\n    \"\"\"Run a shell command and return
+    combined stdout/stderr.\"\"\"\n    try:\n        result = subprocess.run(\n            cmd,
+    shell=True, capture_output=True, text=True, timeout=timeout\n        )\n        return
+    (result.stdout + result.stderr).strip()\n    except subprocess.TimeoutExpired:\n
+    \       return f\"[timed out after {timeout}s]: {cmd}\"\n    except Exception
+    as exc:\n        return f\"[error: {exc}]\"\n\n\ndef _is_safe_auto_execute(cmd:
+    str) -> bool:\n    return any(cmd.strip().startswith(p) for p in SAFE_AUTO_EXECUTE_PREFIXES)\n\n\ndef
+    _is_allowed(cmd: str) -> bool:\n    return any(cmd.strip().startswith(p) for p
+    in ALL_ALLOWED_PREFIXES)\n\n\n# ---------------------------------------------------------------------------\n#
+    Phase 1: Broad Context Collection\n# ---------------------------------------------------------------------------\n\ndef
+    _collect_base_context(namespace: str, name: str, kind: str = \"pod\") -> dict:\n
+    \   \"\"\"Collect initial broad diagnostic context.\"\"\"\n    ctx = {\n        \"timestamp\":
+    datetime.now(timezone.utc).isoformat(),\n        \"resource_kind\": kind,\n        \"resource_name\":
+    name,\n        \"namespace\": namespace,\n    }\n    ctx[\"resource_yaml\"]        =
+    _run(f\"kubectl get {kind} {name} -n {namespace} -o yaml 2>&1\")\n    ctx[\"describe\"]
+    \            = _run(f\"kubectl describe {kind} {name} -n {namespace} 2>&1\")\n
+    \   ctx[\"warning_events\"]       = _run(\n        f\"kubectl get events -n {namespace}
+    --field-selector \"\n        f\"involvedObject.name={name},type=Warning --sort-by=.lastTimestamp
+    2>&1\"\n    )\n    ctx[\"namespace_pod_status\"] = _run(f\"kubectl get pods -n
+    {namespace} -o wide 2>&1\")\n\n    if kind == \"pod\":\n        ctx[\"logs_current\"]
+    \ = _run(\n            f\"kubectl logs {name} -n {namespace} --all-containers
+    --tail=50 2>&1\"\n        )\n        ctx[\"logs_previous\"] = _run(\n            f\"kubectl
+    logs {name} -n {namespace} --all-containers --tail=50 --previous 2>&1\"\n        )\n\n
+    \   return ctx\n\n\n# ---------------------------------------------------------------------------\n#
+    Phase 1 Gemini Call: Diagnose + Request Extra Data\n# ---------------------------------------------------------------------------\n\ndef
+    _diagnose(context: dict) -> dict:\n    \"\"\"\n    Phase 1: Ask Gemini to identify
+    the root cause and tell us what\n    ADDITIONAL data it needs to generate a precise,
+    targeted fix.\n    \"\"\"\n    if not GEMINI_API_KEY or not _req:\n        return
+    {\n            \"root_cause_category\": \"Other\",\n            \"preliminary_diagnosis\":
+    \"Gemini unavailable.\",\n            \"additional_data_needed\": [],\n            \"preliminary_severity\":
+    \"unknown\",\n        }\n\n    prompt = (\n        \"You are an elite SRE analyzing
+    a Kubernetes failure. \"\n        \"Based on the diagnostic context below, identify
+    the root cause category \"\n        \"and list the ADDITIONAL specific data you
+    need to generate a precise, \"\n        \"targeted fix (not just a generic restart).\\n\\n\"\n
+    \       \"For example:\\n\"\n        \"  - OOMKilled ╬ô├Ñ├å you need the current
+    memory limit and actual peak usage\\n\"\n        \"  - ImagePullBackOff ╬ô├Ñ├å you
+    need the list of available image tags in ECR\\n\"\n        \"  - DatabaseError
+    ╬ô├Ñ├å you need connectivity test results and secret values\\n\"\n        \"  - CrashLoopBackOff
+    ╬ô├Ñ├å you need the full stack trace from the crash logs\\n\\n\"\n        \"=== DIAGNOSTIC
+    CONTEXT ===\\n\"\n        + json.dumps(context, indent=2, default=str)\n        +
+    \"\\n=== END CONTEXT ===\\n\\n\"\n        \"Return ONLY valid JSON:\\n\"\n        \"{\\n\"\n
+    \       '  \"root_cause_category\": \"OOMKilled|ImagePullBackOff|CrashLoopBackOff|'\n
+    \       'ConfigError|NetworkError|PVCError|IAMError|DatabaseError|Other\",\\n'\n
+    \       '  \"preliminary_diagnosis\": \"One sentence root cause\",\\n'\n        '
+    \ \"preliminary_severity\": \"critical|high|medium|low\",\\n'\n        '  \"additional_data_needed\":
+    [\\n'\n        '    {\"label\": \"human readable name\", \"command\": \"kubectl
+    or shell command to run\"}\\n'\n        '  ]\\n'\n        \"}\"\n    )\n\n    payload
+    = {\n        \"contents\": [{\"parts\": [{\"text\": prompt}]}],\n        \"generationConfig\":
+    {\n            \"temperature\": 0.05,\n            \"maxOutputTokens\": 1024,\n
+    \           \"response_mime_type\": \"application/json\",\n        },\n    }\n\n
+    \   try:\n        resp = _req.post(GEMINI_URL, json=payload, timeout=30)\n        resp.raise_for_status()\n
+    \       raw = resp.json()[\"candidates\"][0][\"content\"][\"parts\"][0][\"text\"].strip()\n
+    \       return json.loads(raw)\n    except Exception as exc:\n        logger.error(f\"Phase
+    1 Gemini call failed: {exc}\")\n        return {\n            \"root_cause_category\":
+    \"Other\",\n            \"preliminary_diagnosis\": f\"Phase 1 error: {exc}\",\n
+    \           \"additional_data_needed\": [],\n            \"preliminary_severity\":
+    \"unknown\",\n        }\n\n\n# ---------------------------------------------------------------------------\n#
+    Dynamic Extra Context Collection\n# ---------------------------------------------------------------------------\n\ndef
+    _collect_extra_context(\n    diagnosis: dict,\n    namespace: str,\n    name:
+    str,\n    kind: str,\n) -> dict:\n    \"\"\"\n    Collect extra context dynamically
+    based on:\n      1. What Gemini asked for in Phase 1.\n      2. Hardened category-specific
+    probes we ALWAYS run for known failure types.\n    \"\"\"\n    extra = {}\n    category
+    = diagnosis.get(\"root_cause_category\", \"Other\")\n\n    # ╬ô├╢├ç╬ô├╢├ç Run whatever
+    extra commands Gemini asked for ╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç\n
+    \   for item in diagnosis.get(\"additional_data_needed\", []):\n        label
+    \  = item.get(\"label\", \"extra_data\")\n        command = item.get(\"command\",
+    \"\")\n        if command:\n            # Safety: only allow kubectl and aws CLI
+    commands in Phase 1 requests\n            if command.strip().startswith((\"kubectl\",
+    \"aws \")):\n                key = re.sub(r\"[^a-z0-9_]\", \"_\", label.lower())[:40]\n
+    \               logger.info(f\"AI-SRE Phase 1 extra probe [{label}]: {command}\")\n
+    \               extra[key] = _run(command, timeout=20)\n            else:\n                extra[label]
+    = f\"[SKIPPED ╬ô├ç├╢ command not allowed: {command}]\"\n\n    # ╬ô├╢├ç╬ô├╢├ç Category-specific
+    built-in probes ╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç\n\n
+    \   if category == \"OOMKilled\":\n        # Get the ACTUAL current memory limit
+    and request for this resource\n        extra[\"resource_limits\"] = _run(\n            f\"kubectl
+    get {kind} {name} -n {namespace} \"\n            f\"-o jsonpath='{{.spec.template.spec.containers[*].resources}}'
+    2>&1\"\n        )\n        # Get recent memory usage metrics if metrics-server
+    is available\n        extra[\"top_pods\"] = _run(f\"kubectl top pods -n {namespace}
+    2>&1\")\n\n    elif category == \"ImagePullBackOff\":\n        # Extract the failing
+    image name from the resource\n        image_raw = _run(\n            f\"kubectl
+    get {kind} {name} -n {namespace} \"\n            f\"-o jsonpath='{{.spec.template.spec.containers[0].image}}'
+    2>&1\"\n        )\n        extra[\"failing_image\"] = image_raw\n        # If
+    it's an ECR image, list the last 5 available tags\n        if \".ecr.\" in image_raw:\n
+    \           repo = image_raw.split(\"/\", 1)[-1].split(\":\")[0]\n            extra[\"available_ecr_tags\"]
+    = _run(\n                f\"aws ecr describe-images --repository-name {repo} \"\n
+    \               f\"--query 'sort_by(imageDetails,&imagePushedAt)[-5:].imageTags'
+    \"\n                f\"--output json 2>&1\"\n            )\n\n    elif category
+    == \"DatabaseError\":\n        # Test TCP connectivity from a debug pod (non-destructive)\n
+    \       db_host = _run(\n            f\"kubectl get {kind} {name} -n {namespace}
+    \"\n            f\"-o jsonpath='{{.spec.template.spec.containers[0].env[?(@.name==\\\"DB_HOST\\\")].value}}'
+    2>&1\"\n        )\n        extra[\"db_host_configured\"] = db_host\n        if
+    db_host and not db_host.startswith(\"[\"):\n            extra[\"db_connectivity_test\"]
+    = _run(\n                f\"kubectl run tmp-db-test --image=busybox --restart=Never
+    --rm -i \"\n                f\"--namespace={namespace} -- nc -zv {db_host} 3306
+    2>&1\",\n                timeout=30,\n            )\n        # Check if the DB
+    secret exists and has the right keys\n        extra[\"db_secret_keys\"] = _run(\n
+    \           f\"kubectl get secret django-backend-db-secret -n {namespace} \"\n
+    \           f\"-o jsonpath='{{.data}}' 2>&1 | python3 -c \"\n            f\"\\\"import
+    sys,json; d=json.load(sys.stdin); print(list(d.keys()))\\\" 2>&1\"\n        )\n\n
+    \   elif category == \"CrashLoopBackOff\":\n        # Get the full previous crash
+    logs ╬ô├ç├╢ these contain the actual stack trace\n        extra[\"full_crash_logs\"]
+    = _run(\n            f\"kubectl logs {name} -n {namespace} --all-containers --previous
+    2>&1\"\n        )\n        # Check restart count\n        extra[\"restart_count\"]
+    = _run(\n            f\"kubectl get pod {name} -n {namespace} \"\n            f\"-o
+    jsonpath='{{.status.containerStatuses[*].restartCount}}' 2>&1\"\n        )\n\n
+    \   elif category == \"PVCError\":\n        # Check PVC status\n        extra[\"pvc_status\"]
+    = _run(f\"kubectl get pvc -n {namespace} -o wide 2>&1\")\n        extra[\"pv_status\"]
+    \ = _run(\"kubectl get pv -o wide 2>&1\")\n\n    elif category == \"NetworkError\":\n
+    \       # Check services and endpoints\n        extra[\"services\"]  = _run(f\"kubectl
+    get svc -n {namespace} -o wide 2>&1\")\n        extra[\"endpoints\"] = _run(f\"kubectl
+    get endpoints -n {namespace} 2>&1\")\n        extra[\"ingresses\"] = _run(f\"kubectl
+    get ingress -n {namespace} 2>&1\")\n\n    elif category == \"IAMError\":\n        #
+    Check service account annotations for IRSA\n        extra[\"service_account\"]
+    = _run(\n            f\"kubectl get serviceaccount -n {namespace} -o yaml 2>&1\"\n
+    \       )\n\n    return extra\n\n\n# ---------------------------------------------------------------------------\n#
+    Phase 2 Gemini Call: Generate Targeted Fix\n# ---------------------------------------------------------------------------\n\ndef
+    _generate_fix(base_ctx: dict, diagnosis: dict, extra_ctx: dict) -> dict:\n    \"\"\"\n
+    \   Phase 2: Send Gemini the full picture (base context + diagnosis + extra data)\n
+    \   and ask for a SPECIFIC, TARGETED fix ╬ô├ç├╢ not a generic restart.\n    \"\"\"\n
+    \   empty = {\n        \"diagnosis\": diagnosis.get(\"preliminary_diagnosis\",
+    \"Unknown\"),\n        \"severity\": diagnosis.get(\"preliminary_severity\", \"unknown\"),\n
+    \       \"root_cause_category\": diagnosis.get(\"root_cause_category\", \"Other\"),\n
+    \       \"fix_commands\": [],\n        \"safe_to_auto_execute\": False,\n        \"confidence\":
+    0.0,\n        \"requires_human_approval\": True,\n        \"human_approval_reason\":
+    \"Phase 2 Gemini call failed.\",\n        \"post_fix_verification\": \"kubectl
+    get pods -A\",\n        \"explanation\": \"\",\n    }\n\n    if not GEMINI_API_KEY
+    or not _req:\n        return empty\n\n    prompt = (\n        \"You are an elite
+    SRE. You previously diagnosed a Kubernetes failure. \"\n        \"Now, with the
+    ADDITIONAL diagnostic data collected, generate a SPECIFIC, \"\n        \"TARGETED
+    fix ╬ô├ç├╢ not a generic restart.\\n\\n\"\n        \"For example:\\n\"\n        \"
+    \ - OOMKilled ╬ô├Ñ├å patch the exact memory limit to 2x the peak usage you observed\\n\"\n
+    \       \"  - ImagePullBackOff ╬ô├Ñ├å patch to the specific latest valid tag from
+    ECR\\n\"\n        \"  - DatabaseError ╬ô├Ñ├å patch the specific wrong env var to
+    the correct value\\n\"\n        \"  - CrashLoopBackOff ╬ô├Ñ├å if it's a config error
+    in code, patch the env var; \"\n        \"if it's a crash, rollout restart\\n\\n\"\n
+    \       \"=== PRELIMINARY DIAGNOSIS ===\\n\"\n        + json.dumps(diagnosis,
+    indent=2)\n        + \"\\n\\n=== ADDITIONAL CONTEXT COLLECTED ===\\n\"\n        +
+    json.dumps(extra_ctx, indent=2, default=str)\n        + \"\\n\\n=== ORIGINAL BASE
+    CONTEXT (summary only) ===\\n\"\n        f\"  Resource: {base_ctx.get('resource_kind')}/{base_ctx.get('resource_name')}
+    \"\n        f\"in namespace {base_ctx.get('namespace')}\\n\"\n        f\"  Timestamp:
+    {base_ctx.get('timestamp')}\\n\\n\"\n        \"=== SAFETY RULES ===\\n\"\n        \"Allowed
+    kubectl verbs: rollout restart, rollout undo, scale, annotate, \"\n        \"label,
+    patch, set image, set env, set resources.\\n\"\n        \"NEVER suggest: delete,
+    exec, apply, create, replace, drain, cordon.\\n\"\n        \"Set safe_to_auto_execute=true
+    ONLY for: rollout restart, rollout undo, scale.\\n\"\n        \"Set requires_human_approval=true
+    for: patch, set image, set env, set resources.\\n\"\n        \"Set confidence
+    < 0.90 and requires_human_approval=true if unsure.\\n\\n\"\n        \"Return ONLY
+    valid JSON:\\n\"\n        \"{\\n\"\n        '  \"diagnosis\": \"Precise root cause
+    with specific details from the extra context\",\\n'\n        '  \"severity\":
+    \"critical|high|medium|low\",\\n'\n        '  \"root_cause_category\": \"OOMKilled|ImagePullBackOff|CrashLoopBackOff|'\n
+    \       'ConfigError|NetworkError|PVCError|IAMError|DatabaseError|Other\",\\n'\n
+    \       '  \"fix_commands\": [\"kubectl patch deployment/foo -n bar --type=json
+    -p ...\"],\\n'\n        '  \"safe_to_auto_execute\": false,\\n'\n        '  \"confidence\":
+    0.0,\\n'\n        '  \"requires_human_approval\": true,\\n'\n        '  \"human_approval_reason\":
+    \"Why human should review this specific fix\",\\n'\n        '  \"post_fix_verification\":
+    \"kubectl command to verify the fix worked\",\\n'\n        '  \"explanation\":
+    \"Step-by-step: what is broken, what the command does, and why\"\\n'\n        \"}\"\n
+    \   )\n\n    payload = {\n        \"contents\": [{\"parts\": [{\"text\": prompt}]}],\n
+    \       \"generationConfig\": {\n            \"temperature\": 0.05,\n            \"maxOutputTokens\":
+    2048,\n            \"response_mime_type\": \"application/json\",\n        },\n
+    \   }\n\n    try:\n        resp = _req.post(GEMINI_URL, json=payload, timeout=45)\n
+    \       resp.raise_for_status()\n        raw = resp.json()[\"candidates\"][0][\"content\"][\"parts\"][0][\"text\"].strip()\n
+    \       return json.loads(raw)\n    except Exception as exc:\n        logger.error(f\"Phase
+    2 Gemini call failed: {exc}\")\n        empty[\"diagnosis\"] = f\"{diagnosis.get('preliminary_diagnosis')}
+    [Phase 2 error: {exc}]\"\n        return empty\n\n\n# ---------------------------------------------------------------------------\n#
+    Command Execution\n# ---------------------------------------------------------------------------\n\ndef
+    _execute_fixes(gemini: dict) -> list:\n    \"\"\"\n    Execute fix commands using
+    two-tier logic:\n      - SAFE_AUTO_EXECUTE_PREFIXES + confidence >= 0.90 + not
+    needs_human ╬ô├Ñ├å auto-execute\n      - HUMAN_APPROVAL_PREFIXES ╬ô├Ñ├å always surface
+    to human, never auto-execute\n      - Not in allowlist ╬ô├Ñ├å hard-blocked with explanation\n
+    \   \"\"\"\n    results      = []\n    confidence   = gemini.get(\"confidence\",
+    0.0)\n    safe         = gemini.get(\"safe_to_auto_execute\", False)\n    needs_human
+    \ = gemini.get(\"requires_human_approval\", True)\n    commands     = gemini.get(\"fix_commands\",
+    [])\n\n    if not commands:\n        results.append(\"╬ô├ñΓòú No fix commands were
+    generated by the AI.\")\n        return results\n\n    # Overall gate: if Gemini
+    itself says defer to human, respect that\n    if needs_human or not safe or confidence
+    < AUTO_EXECUTE_CONFIDENCE_THRESHOLD:\n        results.append(\n            f\"╬ô├àΓòò
+    \ AUTO-EXECUTION SKIPPED\\n\"\n            f\"   Confidence     : {confidence:.0%}
+    \ (threshold: {AUTO_EXECUTE_CONFIDENCE_THRESHOLD:.0%})\\n\"\n            f\"   Safe
+    flag      : {safe}\\n\"\n            f\"   Needs approval : {needs_human}\\n\"\n
+    \           f\"   Reason         : {gemini.get('human_approval_reason', 'See above')}\\n\\n\"\n
+    \           f\"\U0001F464  COPY-PASTE THESE COMMANDS TO APPLY THE FIX:\\n\"\n
+    \           + \"\\n\".join(f\"   $ {cmd}\" for cmd in commands)\n        )\n        return
+    results\n\n    # Per-command gate\n    for cmd in commands:\n        cmd = cmd.strip()\n\n
+    \       if not _is_allowed(cmd):\n            results.append(\n                f\"\U0001F6AB
+    \ HARD-BLOCKED (verb not in allowlist): {cmd}\\n\"\n                f\"    Allowed:
+    rollout restart/undo, scale, annotate, label, patch, \"\n                f\"set
+    image/env/resources\"\n            )\n            logger.warning(f\"AI-SRE BLOCKED:
+    {cmd}\")\n            continue\n\n        if not _is_safe_auto_execute(cmd):\n
+    \           # Allowed verb but requires structural change ╬ô├Ñ├å defer to human\n
+    \           results.append(\n                f\"╬ô├àΓòò  DEFERRED TO HUMAN (structural
+    change verb):\\n\"\n                f\"   $ {cmd}\"\n            )\n            logger.info(f\"AI-SRE
+    DEFERRED: {cmd}\")\n            continue\n\n        # All gates passed ╬ô├Ñ├å auto-execute\n
+    \       logger.info(f\"AI-SRE EXECUTING: {cmd}\")\n        output = _run(cmd,
+    timeout=60)\n        results.append(f\"╬ô┬ú├á  EXECUTED: {cmd}\\n    OUTPUT: {output}\")\n\n
+    \   return results\n\n\n# ---------------------------------------------------------------------------\n#
+    Finding Builder\n# ---------------------------------------------------------------------------\n\ndef
+    _build_finding(\n    diagnosis: dict,\n    gemini: dict,\n    exec_results: list,\n
+    \   resource_name: str,\n) -> Finding:\n    severity_map = {\n        \"critical\":
+    FindingSeverity.HIGH,\n        \"high\":     FindingSeverity.HIGH,\n        \"medium\":
+    \  FindingSeverity.MEDIUM,\n        \"low\":      FindingSeverity.LOW,\n    }\n
+    \   sev = severity_map.get(gemini.get(\"severity\", \"medium\"), FindingSeverity.MEDIUM)\n\n
+    \   needs_human    = gemini.get(\"requires_human_approval\", True)\n    confidence_pct
+    = f\"{gemini.get('confidence', 0):.0%}\"\n    approval_badge = \"\U0001F464 **REQUIRES
+    HUMAN APPROVAL**\" if needs_human else \"\U0001F916 **AUTO-REMEDIATED**\"\n\n
+    \   finding = Finding(\n        title=(\n            f\"AI-SRE [{gemini.get('root_cause_category',
+    'Failure')}]: \"\n            f\"{resource_name}\"\n        ),\n        source=FindingType.MANUAL,\n
+    \       severity=sev,\n    )\n\n    exec_text = \"\\n\".join(exec_results) if
+    exec_results else \"(no commands)\"\n\n    finding.add_enrichment([\n        MarkdownBlock(\n
+    \           f\"## {approval_badge}\\n\\n\"\n            f\"**Confidence:** {confidence_pct}
+    | \"\n            f\"**Severity:** `{gemini.get('severity', 'unknown').upper()}`
+    | \"\n            f\"**Category:** `{gemini.get('root_cause_category', 'unknown')}`\\n\\n\"\n
+    \           f\"---\\n\\n\"\n            f\"## \U0001F50D Phase 1 ╬ô├ç├╢ Preliminary
+    Diagnosis\\n\"\n            f\"{diagnosis.get('preliminary_diagnosis', 'N/A')}\\n\\n\"\n
+    \           f\"## \U0001F52C Phase 2 ╬ô├ç├╢ Targeted Root Cause\\n\"\n            f\"{gemini.get('diagnosis',
+    'N/A')}\\n\\n\"\n            f\"## \U0001F4A1 Explanation\\n\"\n            f\"{gemini.get('explanation',
+    'N/A')}\\n\\n\"\n            f\"## \U0001F6E0 Execution Results\\n\"\n            f\"```\\n{exec_text}\\n```\\n\\n\"\n
+    \           f\"## ╬ô┬ú├á Verification\\n\"\n            f\"```bash\\n{gemini.get('post_fix_verification',
+    'kubectl get pods -A')}\\n```\"\n        )\n    ])\n    return finding\n\n\n#
+    ---------------------------------------------------------------------------\n#
+    Orchestrator\n# ---------------------------------------------------------------------------\n\ndef
+    _run_healing_loop(\n    namespace: str,\n    name: str,\n    kind: str = \"pod\",\n
+    \   extra_alert_ctx: dict | None = None,\n) -> tuple:\n    \"\"\"\n    Run the
+    full two-phase AI healing loop and return (diagnosis, gemini, exec_results).\n
+    \   \"\"\"\n    logger.info(f\"AI-SRE Phase 1: Collecting base context for {kind}/{namespace}/{name}\")\n
+    \   base_ctx = _collect_base_context(namespace, name, kind)\n\n    if extra_alert_ctx:\n
+    \       base_ctx.update(extra_alert_ctx)\n\n    logger.info(f\"AI-SRE Phase 1:
+    Calling Gemini for diagnosis\")\n    diagnosis = _diagnose(base_ctx)\n    logger.info(\n
+    \       f\"AI-SRE Phase 1 result: category={diagnosis.get('root_cause_category')},
+    \"\n        f\"preliminary={diagnosis.get('preliminary_diagnosis')}\"\n    )\n\n
+    \   logger.info(f\"AI-SRE Phase 2: Collecting targeted extra context\")\n    extra_ctx
+    = _collect_extra_context(diagnosis, namespace, name, kind)\n\n    logger.info(f\"AI-SRE
+    Phase 2: Calling Gemini for targeted fix\")\n    gemini = _generate_fix(base_ctx,
+    diagnosis, extra_ctx)\n    logger.info(\n        f\"AI-SRE Phase 2 result: confidence={gemini.get('confidence')},
+    \"\n        f\"auto_execute={gemini.get('safe_to_auto_execute')}, \"\n        f\"commands={gemini.get('fix_commands')}\"\n
+    \   )\n\n    exec_results = _execute_fixes(gemini)\n    return diagnosis, gemini,
+    exec_results\n\n\n# ---------------------------------------------------------------------------\n#
+    Robusta Action Handlers\n# ---------------------------------------------------------------------------\n\n@action\ndef
+    ai_sre_pod_failure(event: PodEvent):\n    \"\"\"\n    Triggered on pod crash/failure.\n
+    \   Runs the two-phase AI healing loop: diagnose ╬ô├Ñ├å collect targeted data ╬ô├Ñ├å
+    fix.\n    \"\"\"\n    pod = event.get_pod()\n    if not pod:\n        return\n\n
+    \   name = pod.metadata.name\n    ns   = pod.metadata.namespace\n    logger.info(f\"AI-SRE:
+    Pod failure trigger ╬ô├ç├╢ {ns}/{name}\")\n\n    diagnosis, gemini, exec_results
+    = _run_healing_loop(ns, name, kind=\"pod\")\n    finding = _build_finding(diagnosis,
+    gemini, exec_results, f\"{ns}/{name}\")\n    event.add_finding(finding)\n\n\n@action\ndef
+    ai_sre_job_failure(event: JobEvent):\n    \"\"\"\n    Triggered on Kubernetes
+    Job failure.\n    Jobs are NEVER auto-remediated ╬ô├ç├╢ diagnosis only, always deferred
+    to human.\n    \"\"\"\n    job = event.get_job()\n    if not job:\n        return\n\n
+    \   name = job.metadata.name\n    ns   = job.metadata.namespace\n    logger.info(f\"AI-SRE:
+    Job failure trigger ╬ô├ç├╢ {ns}/{name}\")\n\n    diagnosis, gemini, _ = _run_healing_loop(ns,
+    name, kind=\"job\")\n\n    # Override: jobs are never auto-remediated\n    gemini[\"requires_human_approval\"]
+    = True\n    gemini[\"safe_to_auto_execute\"]    = False\n    gemini[\"human_approval_reason\"]
+    \  = (\n        \"Job failures require human decision on whether to re-trigger
+    the job.\"\n    )\n\n    exec_results = _execute_fixes(gemini)\n    finding      =
+    _build_finding(diagnosis, gemini, exec_results, f\"job/{ns}/{name}\")\n    event.add_finding(finding)\n\n\n@action\ndef
+    ai_sre_prometheus_alert(event: PrometheusKubernetesAlert):\n    \"\"\"\n    Triggered
+    on ANY Prometheus alert (high error rate, PVC full, node pressure, etc.).\n    Enriches
+    the context with alert metadata before running the two-phase loop.\n    \"\"\"\n
+    \   alert  = event.get_alert()\n    labels = alert.labels if alert else {}\n\n
+    \   name = (\n        labels.get(\"pod\")\n        or labels.get(\"deployment\")\n
+    \       or labels.get(\"job_name\")\n        or \"unknown\"\n    )\n    ns   =
+    labels.get(\"namespace\", \"default\")\n    kind = \"pod\" if labels.get(\"pod\")
+    else \"deployment\"\n\n    logger.info(\n        f\"AI-SRE: Prometheus alert trigger
+    \"\n        f\"'{alert.name if alert else 'unknown'}' ╬ô├ç├╢ {ns}/{name}\"\n    )\n\n
+    \   # Pass alert metadata as extra context to Phase 1\n    alert_ctx = {\n        \"alert_name\":
+    \       alert.name if alert else \"unknown\",\n        \"alert_labels\":      labels,\n
+    \       \"alert_description\": labels.get(\"description\", \"\"),\n        \"alert_summary\":
+    \    labels.get(\"summary\", \"\"),\n    }\n\n    diagnosis, gemini, exec_results
+    = _run_healing_loop(\n        ns, name, kind=kind, extra_alert_ctx=alert_ctx\n
+    \   )\n    finding = _build_finding(\n        diagnosis, gemini, exec_results,\n
+    \       f\"Alert:{alert_ctx['alert_name']} {ns}/{name}\"\n    )\n    event.add_finding(finding)\n"
 kind: ConfigMap
 metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: "{\"apiVersion\":\"v1\",\"data\":{\"ai_sre_agent.py\":\"#
+      =============================================================================\\n#
+      AI SRE AGENT ╬ô├ç├╢ Gemini-Powered Kubernetes Self-Healing (Dynamic + Production-Grade)\\n#
+      =============================================================================\\n#
+      NOTE: This file runs INSIDE the Robusta runner container in the cluster.\\n#
+      The `robusta.api` module is pre-installed in that container image.\\n# Any \\\"Cannot
+      find module robusta.api\\\" IDE errors are EXPECTED false positives.\\n#\\n#
+      Architecture ╬ô├ç├╢ Two-Phase AI Reasoning Loop:\\n#\\n#   Phase 1 (Diagnose):\\n#
+      \    Gemini receives broad diagnostic context and identifies the root cause\\n#
+      \    category (OOMKilled, ImagePullBackOff, DatabaseError, etc.) plus a\\n#
+      \    list of additional data it needs to confirm the diagnosis.\\n#\\n#   Phase
+      2 (Fix):\\n#     The agent automatically collects the extra data Gemini requested\\n#
+      \    (specific resource limits, ECR image tags, secret values, network\\n#     tests,
+      etc.) and sends it back to Gemini for a targeted, specific fix.\\n#     Gemini
+      now generates the EXACT kubectl patch payload for THIS failure,\\n#     not
+      a generic restart.\\n#\\n# Safety:\\n#   - ALLOWLIST: only safe kubectl verbs
+      are auto-executed.\\n#   - For human-approval fixes (e.g. complex patches),
+      ALL suggested commands\\n#     are surfaced in the Finding so the operator can
+      copy-paste them.\\n#   - Jobs are NEVER auto-remediated.\\n# =============================================================================\\n\\nimport
+      os\\nimport json\\nimport re\\nimport subprocess\\nimport logging\\nfrom datetime
+      import datetime, timezone\\nfrom robusta.api import (\\n    action,\\n    Finding,\\n
+      \   FindingSeverity,\\n    FindingType,\\n    MarkdownBlock,\\n    PodEvent,\\n
+      \   JobEvent,\\n    PrometheusKubernetesAlert,\\n)\\n\\ntry:\\n    import requests
+      as _req\\nexcept ImportError:\\n    _req = None\\n\\n# ---------------------------------------------------------------------------\\n#
+      Configuration\\n# ---------------------------------------------------------------------------\\nGEMINI_API_KEY
+      = os.environ.get(\\\"GEMINI_API_KEY\\\", \\\"\\\")\\nGEMINI_MODEL   = \\\"gemini-1.5-flash\\\"\\nGEMINI_URL
+      \    = (\\n    f\\\"https://generativelanguage.googleapis.com/v1beta/models/\\\"\\n
+      \   f\\\"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}\\\"\\n)\\n\\n#
+      Confidence threshold for auto-execution\\nAUTO_EXECUTE_CONFIDENCE_THRESHOLD
+      = 0.90\\n\\n# ---------------------------------------------------------------------------\\n#
+      STRICT ALLOWLIST ╬ô├ç├╢ commands the agent may auto-execute without human approval\\n#
+      ---------------------------------------------------------------------------\\n#
+      These are SAFE and FULLY REVERSIBLE operations. Anything not in this list\\n#
+      is surfaced to the human operator as a \\\"ready to run\\\" command but never\\n#
+      executed autonomously.\\nSAFE_AUTO_EXECUTE_PREFIXES = (\\n    \\\"kubectl rollout
+      restart\\\",\\n    \\\"kubectl rollout undo\\\",\\n    \\\"kubectl scale\\\",\\n
+      \   \\\"kubectl annotate\\\",\\n    \\\"kubectl label\\\",\\n)\\n\\n# These
+      verbs are ALLOWED in Gemini's suggestions (shown to human) but\\n# never auto-executed
+      ╬ô├ç├╢ they make structural changes.\\nHUMAN_APPROVAL_PREFIXES = (\\n    \\\"kubectl
+      patch\\\",\\n    \\\"kubectl set image\\\",\\n    \\\"kubectl set env\\\",\\n
+      \   \\\"kubectl set resources\\\",\\n)\\n\\nALL_ALLOWED_PREFIXES = SAFE_AUTO_EXECUTE_PREFIXES
+      + HUMAN_APPROVAL_PREFIXES\\n\\nlogger = logging.getLogger(__name__)\\n\\n\\n#
+      ---------------------------------------------------------------------------\\n#
+      Helpers\\n# ---------------------------------------------------------------------------\\n\\ndef
+      _run(cmd: str, timeout: int = 20) -\\u003e str:\\n    \\\"\\\"\\\"Run a shell
+      command and return combined stdout/stderr.\\\"\\\"\\\"\\n    try:\\n        result
+      = subprocess.run(\\n            cmd, shell=True, capture_output=True, text=True,
+      timeout=timeout\\n        )\\n        return (result.stdout + result.stderr).strip()\\n
+      \   except subprocess.TimeoutExpired:\\n        return f\\\"[timed out after
+      {timeout}s]: {cmd}\\\"\\n    except Exception as exc:\\n        return f\\\"[error:
+      {exc}]\\\"\\n\\n\\ndef _is_safe_auto_execute(cmd: str) -\\u003e bool:\\n    return
+      any(cmd.strip().startswith(p) for p in SAFE_AUTO_EXECUTE_PREFIXES)\\n\\n\\ndef
+      _is_allowed(cmd: str) -\\u003e bool:\\n    return any(cmd.strip().startswith(p)
+      for p in ALL_ALLOWED_PREFIXES)\\n\\n\\n# ---------------------------------------------------------------------------\\n#
+      Phase 1: Broad Context Collection\\n# ---------------------------------------------------------------------------\\n\\ndef
+      _collect_base_context(namespace: str, name: str, kind: str = \\\"pod\\\") -\\u003e
+      dict:\\n    \\\"\\\"\\\"Collect initial broad diagnostic context.\\\"\\\"\\\"\\n
+      \   ctx = {\\n        \\\"timestamp\\\": datetime.now(timezone.utc).isoformat(),\\n
+      \       \\\"resource_kind\\\": kind,\\n        \\\"resource_name\\\": name,\\n
+      \       \\\"namespace\\\": namespace,\\n    }\\n    ctx[\\\"resource_yaml\\\"]
+      \       = _run(f\\\"kubectl get {kind} {name} -n {namespace} -o yaml 2\\u003e\\u00261\\\")\\n
+      \   ctx[\\\"describe\\\"]             = _run(f\\\"kubectl describe {kind} {name}
+      -n {namespace} 2\\u003e\\u00261\\\")\\n    ctx[\\\"warning_events\\\"]       =
+      _run(\\n        f\\\"kubectl get events -n {namespace} --field-selector \\\"\\n
+      \       f\\\"involvedObject.name={name},type=Warning --sort-by=.lastTimestamp
+      2\\u003e\\u00261\\\"\\n    )\\n    ctx[\\\"namespace_pod_status\\\"] = _run(f\\\"kubectl
+      get pods -n {namespace} -o wide 2\\u003e\\u00261\\\")\\n\\n    if kind == \\\"pod\\\":\\n
+      \       ctx[\\\"logs_current\\\"]  = _run(\\n            f\\\"kubectl logs {name}
+      -n {namespace} --all-containers --tail=50 2\\u003e\\u00261\\\"\\n        )\\n
+      \       ctx[\\\"logs_previous\\\"] = _run(\\n            f\\\"kubectl logs {name}
+      -n {namespace} --all-containers --tail=50 --previous 2\\u003e\\u00261\\\"\\n
+      \       )\\n\\n    return ctx\\n\\n\\n# ---------------------------------------------------------------------------\\n#
+      Phase 1 Gemini Call: Diagnose + Request Extra Data\\n# ---------------------------------------------------------------------------\\n\\ndef
+      _diagnose(context: dict) -\\u003e dict:\\n    \\\"\\\"\\\"\\n    Phase 1: Ask
+      Gemini to identify the root cause and tell us what\\n    ADDITIONAL data it
+      needs to generate a precise, targeted fix.\\n    \\\"\\\"\\\"\\n    if not GEMINI_API_KEY
+      or not _req:\\n        return {\\n            \\\"root_cause_category\\\": \\\"Other\\\",\\n
+      \           \\\"preliminary_diagnosis\\\": \\\"Gemini unavailable.\\\",\\n            \\\"additional_data_needed\\\":
+      [],\\n            \\\"preliminary_severity\\\": \\\"unknown\\\",\\n        }\\n\\n
+      \   prompt = (\\n        \\\"You are an elite SRE analyzing a Kubernetes failure.
+      \\\"\\n        \\\"Based on the diagnostic context below, identify the root
+      cause category \\\"\\n        \\\"and list the ADDITIONAL specific data you
+      need to generate a precise, \\\"\\n        \\\"targeted fix (not just a generic
+      restart).\\\\n\\\\n\\\"\\n        \\\"For example:\\\\n\\\"\\n        \\\"  -
+      OOMKilled ╬ô├Ñ├å you need the current memory limit and actual peak usage\\\\n\\\"\\n
+      \       \\\"  - ImagePullBackOff ╬ô├Ñ├å you need the list of available image tags
+      in ECR\\\\n\\\"\\n        \\\"  - DatabaseError ╬ô├Ñ├å you need connectivity test
+      results and secret values\\\\n\\\"\\n        \\\"  - CrashLoopBackOff ╬ô├Ñ├å you
+      need the full stack trace from the crash logs\\\\n\\\\n\\\"\\n        \\\"===
+      DIAGNOSTIC CONTEXT ===\\\\n\\\"\\n        + json.dumps(context, indent=2, default=str)\\n
+      \       + \\\"\\\\n=== END CONTEXT ===\\\\n\\\\n\\\"\\n        \\\"Return ONLY
+      valid JSON:\\\\n\\\"\\n        \\\"{\\\\n\\\"\\n        '  \\\"root_cause_category\\\":
+      \\\"OOMKilled|ImagePullBackOff|CrashLoopBackOff|'\\n        'ConfigError|NetworkError|PVCError|IAMError|DatabaseError|Other\\\",\\\\n'\\n
+      \       '  \\\"preliminary_diagnosis\\\": \\\"One sentence root cause\\\",\\\\n'\\n
+      \       '  \\\"preliminary_severity\\\": \\\"critical|high|medium|low\\\",\\\\n'\\n
+      \       '  \\\"additional_data_needed\\\": [\\\\n'\\n        '    {\\\"label\\\":
+      \\\"human readable name\\\", \\\"command\\\": \\\"kubectl or shell command to
+      run\\\"}\\\\n'\\n        '  ]\\\\n'\\n        \\\"}\\\"\\n    )\\n\\n    payload
+      = {\\n        \\\"contents\\\": [{\\\"parts\\\": [{\\\"text\\\": prompt}]}],\\n
+      \       \\\"generationConfig\\\": {\\n            \\\"temperature\\\": 0.05,\\n
+      \           \\\"maxOutputTokens\\\": 1024,\\n            \\\"response_mime_type\\\":
+      \\\"application/json\\\",\\n        },\\n    }\\n\\n    try:\\n        resp
+      = _req.post(GEMINI_URL, json=payload, timeout=30)\\n        resp.raise_for_status()\\n
+      \       raw = resp.json()[\\\"candidates\\\"][0][\\\"content\\\"][\\\"parts\\\"][0][\\\"text\\\"].strip()\\n
+      \       return json.loads(raw)\\n    except Exception as exc:\\n        logger.error(f\\\"Phase
+      1 Gemini call failed: {exc}\\\")\\n        return {\\n            \\\"root_cause_category\\\":
+      \\\"Other\\\",\\n            \\\"preliminary_diagnosis\\\": f\\\"Phase 1 error:
+      {exc}\\\",\\n            \\\"additional_data_needed\\\": [],\\n            \\\"preliminary_severity\\\":
+      \\\"unknown\\\",\\n        }\\n\\n\\n# ---------------------------------------------------------------------------\\n#
+      Dynamic Extra Context Collection\\n# ---------------------------------------------------------------------------\\n\\ndef
+      _collect_extra_context(\\n    diagnosis: dict,\\n    namespace: str,\\n    name:
+      str,\\n    kind: str,\\n) -\\u003e dict:\\n    \\\"\\\"\\\"\\n    Collect extra
+      context dynamically based on:\\n      1. What Gemini asked for in Phase 1.\\n
+      \     2. Hardened category-specific probes we ALWAYS run for known failure types.\\n
+      \   \\\"\\\"\\\"\\n    extra = {}\\n    category = diagnosis.get(\\\"root_cause_category\\\",
+      \\\"Other\\\")\\n\\n    # ╬ô├╢├ç╬ô├╢├ç Run whatever extra commands Gemini asked for
+      ╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç\\n
+      \   for item in diagnosis.get(\\\"additional_data_needed\\\", []):\\n        label
+      \  = item.get(\\\"label\\\", \\\"extra_data\\\")\\n        command = item.get(\\\"command\\\",
+      \\\"\\\")\\n        if command:\\n            # Safety: only allow kubectl and
+      aws CLI commands in Phase 1 requests\\n            if command.strip().startswith((\\\"kubectl\\\",
+      \\\"aws \\\")):\\n                key = re.sub(r\\\"[^a-z0-9_]\\\", \\\"_\\\",
+      label.lower())[:40]\\n                logger.info(f\\\"AI-SRE Phase 1 extra
+      probe [{label}]: {command}\\\")\\n                extra[key] = _run(command,
+      timeout=20)\\n            else:\\n                extra[label] = f\\\"[SKIPPED
+      ╬ô├ç├╢ command not allowed: {command}]\\\"\\n\\n    # ╬ô├╢├ç╬ô├╢├ç Category-specific
+      built-in probes ╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç\\n\\n
+      \   if category == \\\"OOMKilled\\\":\\n        # Get the ACTUAL current memory
+      limit and request for this resource\\n        extra[\\\"resource_limits\\\"]
+      = _run(\\n            f\\\"kubectl get {kind} {name} -n {namespace} \\\"\\n
+      \           f\\\"-o jsonpath='{{.spec.template.spec.containers[*].resources}}'
+      2\\u003e\\u00261\\\"\\n        )\\n        # Get recent memory usage metrics
+      if metrics-server is available\\n        extra[\\\"top_pods\\\"] = _run(f\\\"kubectl
+      top pods -n {namespace} 2\\u003e\\u00261\\\")\\n\\n    elif category == \\\"ImagePullBackOff\\\":\\n
+      \       # Extract the failing image name from the resource\\n        image_raw
+      = _run(\\n            f\\\"kubectl get {kind} {name} -n {namespace} \\\"\\n
+      \           f\\\"-o jsonpath='{{.spec.template.spec.containers[0].image}}' 2\\u003e\\u00261\\\"\\n
+      \       )\\n        extra[\\\"failing_image\\\"] = image_raw\\n        # If
+      it's an ECR image, list the last 5 available tags\\n        if \\\".ecr.\\\"
+      in image_raw:\\n            repo = image_raw.split(\\\"/\\\", 1)[-1].split(\\\":\\\")[0]\\n
+      \           extra[\\\"available_ecr_tags\\\"] = _run(\\n                f\\\"aws
+      ecr describe-images --repository-name {repo} \\\"\\n                f\\\"--query
+      'sort_by(imageDetails,\\u0026imagePushedAt)[-5:].imageTags' \\\"\\n                f\\\"--output
+      json 2\\u003e\\u00261\\\"\\n            )\\n\\n    elif category == \\\"DatabaseError\\\":\\n
+      \       # Test TCP connectivity from a debug pod (non-destructive)\\n        db_host
+      = _run(\\n            f\\\"kubectl get {kind} {name} -n {namespace} \\\"\\n
+      \           f\\\"-o jsonpath='{{.spec.template.spec.containers[0].env[?(@.name==\\\\\\\"DB_HOST\\\\\\\")].value}}'
+      2\\u003e\\u00261\\\"\\n        )\\n        extra[\\\"db_host_configured\\\"]
+      = db_host\\n        if db_host and not db_host.startswith(\\\"[\\\"):\\n            extra[\\\"db_connectivity_test\\\"]
+      = _run(\\n                f\\\"kubectl run tmp-db-test --image=busybox --restart=Never
+      --rm -i \\\"\\n                f\\\"--namespace={namespace} -- nc -zv {db_host}
+      3306 2\\u003e\\u00261\\\",\\n                timeout=30,\\n            )\\n
+      \       # Check if the DB secret exists and has the right keys\\n        extra[\\\"db_secret_keys\\\"]
+      = _run(\\n            f\\\"kubectl get secret django-backend-db-secret -n {namespace}
+      \\\"\\n            f\\\"-o jsonpath='{{.data}}' 2\\u003e\\u00261 | python3 -c
+      \\\"\\n            f\\\"\\\\\\\"import sys,json; d=json.load(sys.stdin); print(list(d.keys()))\\\\\\\"
+      2\\u003e\\u00261\\\"\\n        )\\n\\n    elif category == \\\"CrashLoopBackOff\\\":\\n
+      \       # Get the full previous crash logs ╬ô├ç├╢ these contain the actual stack
+      trace\\n        extra[\\\"full_crash_logs\\\"] = _run(\\n            f\\\"kubectl
+      logs {name} -n {namespace} --all-containers --previous 2\\u003e\\u00261\\\"\\n
+      \       )\\n        # Check restart count\\n        extra[\\\"restart_count\\\"]
+      = _run(\\n            f\\\"kubectl get pod {name} -n {namespace} \\\"\\n            f\\\"-o
+      jsonpath='{{.status.containerStatuses[*].restartCount}}' 2\\u003e\\u00261\\\"\\n
+      \       )\\n\\n    elif category == \\\"PVCError\\\":\\n        # Check PVC
+      status\\n        extra[\\\"pvc_status\\\"] = _run(f\\\"kubectl get pvc -n {namespace}
+      -o wide 2\\u003e\\u00261\\\")\\n        extra[\\\"pv_status\\\"]  = _run(\\\"kubectl
+      get pv -o wide 2\\u003e\\u00261\\\")\\n\\n    elif category == \\\"NetworkError\\\":\\n
+      \       # Check services and endpoints\\n        extra[\\\"services\\\"]  =
+      _run(f\\\"kubectl get svc -n {namespace} -o wide 2\\u003e\\u00261\\\")\\n        extra[\\\"endpoints\\\"]
+      = _run(f\\\"kubectl get endpoints -n {namespace} 2\\u003e\\u00261\\\")\\n        extra[\\\"ingresses\\\"]
+      = _run(f\\\"kubectl get ingress -n {namespace} 2\\u003e\\u00261\\\")\\n\\n    elif
+      category == \\\"IAMError\\\":\\n        # Check service account annotations
+      for IRSA\\n        extra[\\\"service_account\\\"] = _run(\\n            f\\\"kubectl
+      get serviceaccount -n {namespace} -o yaml 2\\u003e\\u00261\\\"\\n        )\\n\\n
+      \   return extra\\n\\n\\n# ---------------------------------------------------------------------------\\n#
+      Phase 2 Gemini Call: Generate Targeted Fix\\n# ---------------------------------------------------------------------------\\n\\ndef
+      _generate_fix(base_ctx: dict, diagnosis: dict, extra_ctx: dict) -\\u003e dict:\\n
+      \   \\\"\\\"\\\"\\n    Phase 2: Send Gemini the full picture (base context +
+      diagnosis + extra data)\\n    and ask for a SPECIFIC, TARGETED fix ╬ô├ç├╢ not a
+      generic restart.\\n    \\\"\\\"\\\"\\n    empty = {\\n        \\\"diagnosis\\\":
+      diagnosis.get(\\\"preliminary_diagnosis\\\", \\\"Unknown\\\"),\\n        \\\"severity\\\":
+      diagnosis.get(\\\"preliminary_severity\\\", \\\"unknown\\\"),\\n        \\\"root_cause_category\\\":
+      diagnosis.get(\\\"root_cause_category\\\", \\\"Other\\\"),\\n        \\\"fix_commands\\\":
+      [],\\n        \\\"safe_to_auto_execute\\\": False,\\n        \\\"confidence\\\":
+      0.0,\\n        \\\"requires_human_approval\\\": True,\\n        \\\"human_approval_reason\\\":
+      \\\"Phase 2 Gemini call failed.\\\",\\n        \\\"post_fix_verification\\\":
+      \\\"kubectl get pods -A\\\",\\n        \\\"explanation\\\": \\\"\\\",\\n    }\\n\\n
+      \   if not GEMINI_API_KEY or not _req:\\n        return empty\\n\\n    prompt
+      = (\\n        \\\"You are an elite SRE. You previously diagnosed a Kubernetes
+      failure. \\\"\\n        \\\"Now, with the ADDITIONAL diagnostic data collected,
+      generate a SPECIFIC, \\\"\\n        \\\"TARGETED fix ╬ô├ç├╢ not a generic restart.\\\\n\\\\n\\\"\\n
+      \       \\\"For example:\\\\n\\\"\\n        \\\"  - OOMKilled ╬ô├Ñ├å patch the
+      exact memory limit to 2x the peak usage you observed\\\\n\\\"\\n        \\\"
+      \ - ImagePullBackOff ╬ô├Ñ├å patch to the specific latest valid tag from ECR\\\\n\\\"\\n
+      \       \\\"  - DatabaseError ╬ô├Ñ├å patch the specific wrong env var to the correct
+      value\\\\n\\\"\\n        \\\"  - CrashLoopBackOff ╬ô├Ñ├å if it's a config error
+      in code, patch the env var; \\\"\\n        \\\"if it's a crash, rollout restart\\\\n\\\\n\\\"\\n
+      \       \\\"=== PRELIMINARY DIAGNOSIS ===\\\\n\\\"\\n        + json.dumps(diagnosis,
+      indent=2)\\n        + \\\"\\\\n\\\\n=== ADDITIONAL CONTEXT COLLECTED ===\\\\n\\\"\\n
+      \       + json.dumps(extra_ctx, indent=2, default=str)\\n        + \\\"\\\\n\\\\n===
+      ORIGINAL BASE CONTEXT (summary only) ===\\\\n\\\"\\n        f\\\"  Resource:
+      {base_ctx.get('resource_kind')}/{base_ctx.get('resource_name')} \\\"\\n        f\\\"in
+      namespace {base_ctx.get('namespace')}\\\\n\\\"\\n        f\\\"  Timestamp: {base_ctx.get('timestamp')}\\\\n\\\\n\\\"\\n
+      \       \\\"=== SAFETY RULES ===\\\\n\\\"\\n        \\\"Allowed kubectl verbs:
+      rollout restart, rollout undo, scale, annotate, \\\"\\n        \\\"label, patch,
+      set image, set env, set resources.\\\\n\\\"\\n        \\\"NEVER suggest: delete,
+      exec, apply, create, replace, drain, cordon.\\\\n\\\"\\n        \\\"Set safe_to_auto_execute=true
+      ONLY for: rollout restart, rollout undo, scale.\\\\n\\\"\\n        \\\"Set requires_human_approval=true
+      for: patch, set image, set env, set resources.\\\\n\\\"\\n        \\\"Set confidence
+      \\u003c 0.90 and requires_human_approval=true if unsure.\\\\n\\\\n\\\"\\n        \\\"Return
+      ONLY valid JSON:\\\\n\\\"\\n        \\\"{\\\\n\\\"\\n        '  \\\"diagnosis\\\":
+      \\\"Precise root cause with specific details from the extra context\\\",\\\\n'\\n
+      \       '  \\\"severity\\\": \\\"critical|high|medium|low\\\",\\\\n'\\n        '
+      \ \\\"root_cause_category\\\": \\\"OOMKilled|ImagePullBackOff|CrashLoopBackOff|'\\n
+      \       'ConfigError|NetworkError|PVCError|IAMError|DatabaseError|Other\\\",\\\\n'\\n
+      \       '  \\\"fix_commands\\\": [\\\"kubectl patch deployment/foo -n bar --type=json
+      -p ...\\\"],\\\\n'\\n        '  \\\"safe_to_auto_execute\\\": false,\\\\n'\\n
+      \       '  \\\"confidence\\\": 0.0,\\\\n'\\n        '  \\\"requires_human_approval\\\":
+      true,\\\\n'\\n        '  \\\"human_approval_reason\\\": \\\"Why human should
+      review this specific fix\\\",\\\\n'\\n        '  \\\"post_fix_verification\\\":
+      \\\"kubectl command to verify the fix worked\\\",\\\\n'\\n        '  \\\"explanation\\\":
+      \\\"Step-by-step: what is broken, what the command does, and why\\\"\\\\n'\\n
+      \       \\\"}\\\"\\n    )\\n\\n    payload = {\\n        \\\"contents\\\": [{\\\"parts\\\":
+      [{\\\"text\\\": prompt}]}],\\n        \\\"generationConfig\\\": {\\n            \\\"temperature\\\":
+      0.05,\\n            \\\"maxOutputTokens\\\": 2048,\\n            \\\"response_mime_type\\\":
+      \\\"application/json\\\",\\n        },\\n    }\\n\\n    try:\\n        resp
+      = _req.post(GEMINI_URL, json=payload, timeout=45)\\n        resp.raise_for_status()\\n
+      \       raw = resp.json()[\\\"candidates\\\"][0][\\\"content\\\"][\\\"parts\\\"][0][\\\"text\\\"].strip()\\n
+      \       return json.loads(raw)\\n    except Exception as exc:\\n        logger.error(f\\\"Phase
+      2 Gemini call failed: {exc}\\\")\\n        empty[\\\"diagnosis\\\"] = f\\\"{diagnosis.get('preliminary_diagnosis')}
+      [Phase 2 error: {exc}]\\\"\\n        return empty\\n\\n\\n# ---------------------------------------------------------------------------\\n#
+      Command Execution\\n# ---------------------------------------------------------------------------\\n\\ndef
+      _execute_fixes(gemini: dict) -\\u003e list:\\n    \\\"\\\"\\\"\\n    Execute
+      fix commands using two-tier logic:\\n      - SAFE_AUTO_EXECUTE_PREFIXES + confidence
+      \\u003e= 0.90 + not needs_human ╬ô├Ñ├å auto-execute\\n      - HUMAN_APPROVAL_PREFIXES
+      ╬ô├Ñ├å always surface to human, never auto-execute\\n      - Not in allowlist ╬ô├Ñ├å
+      hard-blocked with explanation\\n    \\\"\\\"\\\"\\n    results      = []\\n
+      \   confidence   = gemini.get(\\\"confidence\\\", 0.0)\\n    safe         =
+      gemini.get(\\\"safe_to_auto_execute\\\", False)\\n    needs_human  = gemini.get(\\\"requires_human_approval\\\",
+      True)\\n    commands     = gemini.get(\\\"fix_commands\\\", [])\\n\\n    if
+      not commands:\\n        results.append(\\\"╬ô├ñΓòú No fix commands were generated
+      by the AI.\\\")\\n        return results\\n\\n    # Overall gate: if Gemini
+      itself says defer to human, respect that\\n    if needs_human or not safe or
+      confidence \\u003c AUTO_EXECUTE_CONFIDENCE_THRESHOLD:\\n        results.append(\\n
+      \           f\\\"╬ô├àΓòò  AUTO-EXECUTION SKIPPED\\\\n\\\"\\n            f\\\"   Confidence
+      \    : {confidence:.0%}  (threshold: {AUTO_EXECUTE_CONFIDENCE_THRESHOLD:.0%})\\\\n\\\"\\n
+      \           f\\\"   Safe flag      : {safe}\\\\n\\\"\\n            f\\\"   Needs
+      approval : {needs_human}\\\\n\\\"\\n            f\\\"   Reason         : {gemini.get('human_approval_reason',
+      'See above')}\\\\n\\\\n\\\"\\n            f\\\"\U0001F464  COPY-PASTE THESE
+      COMMANDS TO APPLY THE FIX:\\\\n\\\"\\n            + \\\"\\\\n\\\".join(f\\\"
+      \  $ {cmd}\\\" for cmd in commands)\\n        )\\n        return results\\n\\n
+      \   # Per-command gate\\n    for cmd in commands:\\n        cmd = cmd.strip()\\n\\n
+      \       if not _is_allowed(cmd):\\n            results.append(\\n                f\\\"\U0001F6AB
+      \ HARD-BLOCKED (verb not in allowlist): {cmd}\\\\n\\\"\\n                f\\\"
+      \   Allowed: rollout restart/undo, scale, annotate, label, patch, \\\"\\n                f\\\"set
+      image/env/resources\\\"\\n            )\\n            logger.warning(f\\\"AI-SRE
+      BLOCKED: {cmd}\\\")\\n            continue\\n\\n        if not _is_safe_auto_execute(cmd):\\n
+      \           # Allowed verb but requires structural change ╬ô├Ñ├å defer to human\\n
+      \           results.append(\\n                f\\\"╬ô├àΓòò  DEFERRED TO HUMAN (structural
+      change verb):\\\\n\\\"\\n                f\\\"   $ {cmd}\\\"\\n            )\\n
+      \           logger.info(f\\\"AI-SRE DEFERRED: {cmd}\\\")\\n            continue\\n\\n
+      \       # All gates passed ╬ô├Ñ├å auto-execute\\n        logger.info(f\\\"AI-SRE
+      EXECUTING: {cmd}\\\")\\n        output = _run(cmd, timeout=60)\\n        results.append(f\\\"╬ô┬ú├á
+      \ EXECUTED: {cmd}\\\\n    OUTPUT: {output}\\\")\\n\\n    return results\\n\\n\\n#
+      ---------------------------------------------------------------------------\\n#
+      Finding Builder\\n# ---------------------------------------------------------------------------\\n\\ndef
+      _build_finding(\\n    diagnosis: dict,\\n    gemini: dict,\\n    exec_results:
+      list,\\n    resource_name: str,\\n) -\\u003e Finding:\\n    severity_map = {\\n
+      \       \\\"critical\\\": FindingSeverity.HIGH,\\n        \\\"high\\\":     FindingSeverity.HIGH,\\n
+      \       \\\"medium\\\":   FindingSeverity.MEDIUM,\\n        \\\"low\\\":      FindingSeverity.LOW,\\n
+      \   }\\n    sev = severity_map.get(gemini.get(\\\"severity\\\", \\\"medium\\\"),
+      FindingSeverity.MEDIUM)\\n\\n    needs_human    = gemini.get(\\\"requires_human_approval\\\",
+      True)\\n    confidence_pct = f\\\"{gemini.get('confidence', 0):.0%}\\\"\\n    approval_badge
+      = \\\"\U0001F464 **REQUIRES HUMAN APPROVAL**\\\" if needs_human else \\\"\U0001F916
+      **AUTO-REMEDIATED**\\\"\\n\\n    finding = Finding(\\n        title=(\\n            f\\\"AI-SRE
+      [{gemini.get('root_cause_category', 'Failure')}]: \\\"\\n            f\\\"{resource_name}\\\"\\n
+      \       ),\\n        source=FindingType.MANUAL,\\n        severity=sev,\\n    )\\n\\n
+      \   exec_text = \\\"\\\\n\\\".join(exec_results) if exec_results else \\\"(no
+      commands)\\\"\\n\\n    finding.add_enrichment([\\n        MarkdownBlock(\\n
+      \           f\\\"## {approval_badge}\\\\n\\\\n\\\"\\n            f\\\"**Confidence:**
+      {confidence_pct} | \\\"\\n            f\\\"**Severity:** `{gemini.get('severity',
+      'unknown').upper()}` | \\\"\\n            f\\\"**Category:** `{gemini.get('root_cause_category',
+      'unknown')}`\\\\n\\\\n\\\"\\n            f\\\"---\\\\n\\\\n\\\"\\n            f\\\"##
+      \U0001F50D Phase 1 ╬ô├ç├╢ Preliminary Diagnosis\\\\n\\\"\\n            f\\\"{diagnosis.get('preliminary_diagnosis',
+      'N/A')}\\\\n\\\\n\\\"\\n            f\\\"## \U0001F52C Phase 2 ╬ô├ç├╢ Targeted
+      Root Cause\\\\n\\\"\\n            f\\\"{gemini.get('diagnosis', 'N/A')}\\\\n\\\\n\\\"\\n
+      \           f\\\"## \U0001F4A1 Explanation\\\\n\\\"\\n            f\\\"{gemini.get('explanation',
+      'N/A')}\\\\n\\\\n\\\"\\n            f\\\"## \U0001F6E0 Execution Results\\\\n\\\"\\n
+      \           f\\\"```\\\\n{exec_text}\\\\n```\\\\n\\\\n\\\"\\n            f\\\"##
+      ╬ô┬ú├á Verification\\\\n\\\"\\n            f\\\"```bash\\\\n{gemini.get('post_fix_verification',
+      'kubectl get pods -A')}\\\\n```\\\"\\n        )\\n    ])\\n    return finding\\n\\n\\n#
+      ---------------------------------------------------------------------------\\n#
+      Orchestrator\\n# ---------------------------------------------------------------------------\\n\\ndef
+      _run_healing_loop(\\n    namespace: str,\\n    name: str,\\n    kind: str =
+      \\\"pod\\\",\\n    extra_alert_ctx: dict | None = None,\\n) -\\u003e tuple:\\n
+      \   \\\"\\\"\\\"\\n    Run the full two-phase AI healing loop and return (diagnosis,
+      gemini, exec_results).\\n    \\\"\\\"\\\"\\n    logger.info(f\\\"AI-SRE Phase
+      1: Collecting base context for {kind}/{namespace}/{name}\\\")\\n    base_ctx
+      = _collect_base_context(namespace, name, kind)\\n\\n    if extra_alert_ctx:\\n
+      \       base_ctx.update(extra_alert_ctx)\\n\\n    logger.info(f\\\"AI-SRE Phase
+      1: Calling Gemini for diagnosis\\\")\\n    diagnosis = _diagnose(base_ctx)\\n
+      \   logger.info(\\n        f\\\"AI-SRE Phase 1 result: category={diagnosis.get('root_cause_category')},
+      \\\"\\n        f\\\"preliminary={diagnosis.get('preliminary_diagnosis')}\\\"\\n
+      \   )\\n\\n    logger.info(f\\\"AI-SRE Phase 2: Collecting targeted extra context\\\")\\n
+      \   extra_ctx = _collect_extra_context(diagnosis, namespace, name, kind)\\n\\n
+      \   logger.info(f\\\"AI-SRE Phase 2: Calling Gemini for targeted fix\\\")\\n
+      \   gemini = _generate_fix(base_ctx, diagnosis, extra_ctx)\\n    logger.info(\\n
+      \       f\\\"AI-SRE Phase 2 result: confidence={gemini.get('confidence')}, \\\"\\n
+      \       f\\\"auto_execute={gemini.get('safe_to_auto_execute')}, \\\"\\n        f\\\"commands={gemini.get('fix_commands')}\\\"\\n
+      \   )\\n\\n    exec_results = _execute_fixes(gemini)\\n    return diagnosis,
+      gemini, exec_results\\n\\n\\n# ---------------------------------------------------------------------------\\n#
+      Robusta Action Handlers\\n# ---------------------------------------------------------------------------\\n\\n@action\\ndef
+      ai_sre_pod_failure(event: PodEvent):\\n    \\\"\\\"\\\"\\n    Triggered on pod
+      crash/failure.\\n    Runs the two-phase AI healing loop: diagnose ╬ô├Ñ├å collect
+      targeted data ╬ô├Ñ├å fix.\\n    \\\"\\\"\\\"\\n    pod = event.get_pod()\\n    if
+      not pod:\\n        return\\n\\n    name = pod.metadata.name\\n    ns   = pod.metadata.namespace\\n
+      \   logger.info(f\\\"AI-SRE: Pod failure trigger ╬ô├ç├╢ {ns}/{name}\\\")\\n\\n
+      \   diagnosis, gemini, exec_results = _run_healing_loop(ns, name, kind=\\\"pod\\\")\\n
+      \   finding = _build_finding(diagnosis, gemini, exec_results, f\\\"{ns}/{name}\\\")\\n
+      \   event.add_finding(finding)\\n\\n\\n@action\\ndef ai_sre_job_failure(event:
+      JobEvent):\\n    \\\"\\\"\\\"\\n    Triggered on Kubernetes Job failure.\\n
+      \   Jobs are NEVER auto-remediated ╬ô├ç├╢ diagnosis only, always deferred to human.\\n
+      \   \\\"\\\"\\\"\\n    job = event.get_job()\\n    if not job:\\n        return\\n\\n
+      \   name = job.metadata.name\\n    ns   = job.metadata.namespace\\n    logger.info(f\\\"AI-SRE:
+      Job failure trigger ╬ô├ç├╢ {ns}/{name}\\\")\\n\\n    diagnosis, gemini, _ = _run_healing_loop(ns,
+      name, kind=\\\"job\\\")\\n\\n    # Override: jobs are never auto-remediated\\n
+      \   gemini[\\\"requires_human_approval\\\"] = True\\n    gemini[\\\"safe_to_auto_execute\\\"]
+      \   = False\\n    gemini[\\\"human_approval_reason\\\"]   = (\\n        \\\"Job
+      failures require human decision on whether to re-trigger the job.\\\"\\n    )\\n\\n
+      \   exec_results = _execute_fixes(gemini)\\n    finding      = _build_finding(diagnosis,
+      gemini, exec_results, f\\\"job/{ns}/{name}\\\")\\n    event.add_finding(finding)\\n\\n\\n@action\\ndef
+      ai_sre_prometheus_alert(event: PrometheusKubernetesAlert):\\n    \\\"\\\"\\\"\\n
+      \   Triggered on ANY Prometheus alert (high error rate, PVC full, node pressure,
+      etc.).\\n    Enriches the context with alert metadata before running the two-phase
+      loop.\\n    \\\"\\\"\\\"\\n    alert  = event.get_alert()\\n    labels = alert.labels
+      if alert else {}\\n\\n    name = (\\n        labels.get(\\\"pod\\\")\\n        or
+      labels.get(\\\"deployment\\\")\\n        or labels.get(\\\"job_name\\\")\\n
+      \       or \\\"unknown\\\"\\n    )\\n    ns   = labels.get(\\\"namespace\\\",
+      \\\"default\\\")\\n    kind = \\\"pod\\\" if labels.get(\\\"pod\\\") else \\\"deployment\\\"\\n\\n
+      \   logger.info(\\n        f\\\"AI-SRE: Prometheus alert trigger \\\"\\n        f\\\"'{alert.name
+      if alert else 'unknown'}' ╬ô├ç├╢ {ns}/{name}\\\"\\n    )\\n\\n    # Pass alert
+      metadata as extra context to Phase 1\\n    alert_ctx = {\\n        \\\"alert_name\\\":
+      \       alert.name if alert else \\\"unknown\\\",\\n        \\\"alert_labels\\\":
+      \     labels,\\n        \\\"alert_description\\\": labels.get(\\\"description\\\",
+      \\\"\\\"),\\n        \\\"alert_summary\\\":     labels.get(\\\"summary\\\",
+      \\\"\\\"),\\n    }\\n\\n    diagnosis, gemini, exec_results = _run_healing_loop(\\n
+      \       ns, name, kind=kind, extra_alert_ctx=alert_ctx\\n    )\\n    finding
+      = _build_finding(\\n        diagnosis, gemini, exec_results,\\n        f\\\"Alert:{alert_ctx['alert_name']}
+      {ns}/{name}\\\"\\n    )\\n    event.add_finding(finding)\\n\"},\"kind\":\"ConfigMap\",\"metadata\":{\"annotations\":{},\"name\":\"ai-sre-action\",\"namespace\":\"robusta\"}}\n"
+  creationTimestamp: "2026-09-03T23:17:25Z"
   name: ai-sre-action
   namespace: robusta
-data:
-  ai_sre_agent.py: |
-    import os
-    import json
-    import re
-    import subprocess
-    import logging
-    from datetime import datetime, timezone
-    from robusta.api import (
-        action,
-        Finding,
-        FindingSeverity,
-        FindingType,
-        MarkdownBlock,
-        PodEvent,
-        JobEvent,
-        PrometheusKubernetesAlert,
-        DeploymentEvent,
-        ReplicaSetEvent,
-        StatefulSetEvent,
-        DaemonSetEvent,
-    )
-
-    try:
-        import requests
-    except ImportError:
-        import urllib.request as requests
-
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-    GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    CONFIDENCE_THRESHOLD = 0.75
-    BLOCKED_VERBS = re.compile(r"\b(delete\s+node|drain|destroy|drop\s+database|rm\s+-rf\s+/)\b", re.IGNORECASE)
-    LOG_GROUP = "/aws/eks/django-notes/ai-sre-heal"
-
-    logger = logging.getLogger(__name__)
-
-    def _run(cmd, timeout=15):
-        """Run a shell command safely and return stdout."""
-        try:
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=timeout
-            )
-            return result.stdout.strip() or result.stderr.strip()
-        except Exception as e:
-            return f"[command error: {e}]"
-
-    def _collect_context(namespace: str, name: str, kind: str = "pod") -> dict:
-        """Collect full diagnostic context for any Kubernetes resource."""
-        ctx = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "resource_kind": kind,
-            "resource_name": name,
-            "namespace": namespace,
-        }
-
-        # Full YAML spec of the failing resource
-        ctx["resource_yaml"] = _run(f"kubectl get {kind} {name} -n {namespace} -o yaml")
-
-        # Recent events from the namespace
-        ctx["events"] = _run(
-            f"kubectl get events -n {namespace} --sort-by='.lastTimestamp' "
-            f"--field-selector involvedObject.name={name} -o wide"
-        )
-
-        # Namespace-wide events for broader context
-        ctx["namespace_events"] = _run(
-            f"kubectl get events -n {namespace} --sort-by='.lastTimestamp'"
-        )
-
-        # For pods — fetch logs from ALL containers (current + previous)
-        if kind == "pod":
-            ctx["logs_current"] = _run(
-                f"kubectl logs {name} -n {namespace} --all-containers --tail=100 2>&1"
-            )
-            ctx["logs_previous"] = _run(
-                f"kubectl logs {name} -n {namespace} --all-containers --tail=50 --previous 2>&1"
-            )
-        elif kind in ("deployment", "statefulset", "daemonset", "replicaset"):
-            # Get logs from owned pods
-            selector = _run(
-                f"kubectl get {kind} {name} -n {namespace} -o jsonpath='{{.spec.selector.matchLabels}}'"
-            )
-            pod_name = _run(
-                f"kubectl get pods -n {namespace} --selector='{selector}' -o jsonpath='{{.items[0].metadata.name}}' 2>/dev/null"
-            )
-            if pod_name:
-                ctx["logs_current"] = _run(
-                    f"kubectl logs {pod_name} -n {namespace} --all-containers --tail=100 2>&1"
-                )
-                ctx["logs_previous"] = _run(
-                    f"kubectl logs {pod_name} -n {namespace} --all-containers --tail=50 --previous 2>&1"
-                )
-
-        # Describe the resource (shows conditions, mounts, env, etc.)
-        ctx["describe"] = _run(f"kubectl describe {kind} {name} -n {namespace}")
-
-        # List all pods in namespace to see overall health
-        ctx["namespace_pod_status"] = _run(f"kubectl get pods -n {namespace} -o wide")
-
-        return ctx
-
-    def _call_gemini(context: dict) -> dict:
-        """Send full context to Gemini and get a structured JSON fix plan."""
-        prompt = f"""You are an elite Site Reliability Engineer (SRE) with deep expertise in Kubernetes, AWS EKS, and Django applications.
-
-A Kubernetes resource has failed in our cluster. Below is the COMPLETE diagnostic context.
-Your task is to:
-1. Diagnose the ROOT CAUSE precisely.
-2. Generate a sequence of kubectl/helm commands that will FIX the problem.
-3. Return a structured JSON response ONLY — no extra text, no markdown fences.
-
-=== DIAGNOSTIC CONTEXT ===
-{json.dumps(context, indent=2, default=str)}
-=== END CONTEXT ===
-
-Return ONLY this JSON structure (no markdown fences, no extra text):
-{{
-  "diagnosis": "One-paragraph precise root cause explanation",
-  "severity": "critical|high|medium|low",
-  "root_cause_category": "e.g. OOMKilled|ImagePullBackOff|CrashLoopBackOff|ConfigError|NetworkError|PVCError|IAMError|DatabaseError|Other",
-  "fix_commands": ["kubectl ...", "kubectl ...", "..."],
-  "safe_to_auto_execute": true,
-  "confidence": 0.0 to 1.0,
-  "post_fix_verification": "kubectl command to verify the fix worked",
-  "explanation": "Why each fix command addresses the root cause"
-}}
-
-RULES for fix_commands:
-- Only include commands that are SAFE and REVERSIBLE.
-- Set safe_to_auto_execute=false if any fix requires deleting critical data or draining nodes.
-- If you don't have enough context to be sure, set confidence < 0.75 and safe_to_auto_execute=false.
-- Prefer `kubectl rollout restart`, `kubectl patch`, `kubectl scale` over destructive commands.
-"""
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 2048,
-            },
-        }
-        try:
-            import requests as req
-            resp = req.post(GEMINI_URL, json=payload, timeout=30)
-            resp.raise_for_status()
-            raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            # Strip possible markdown fences
-            raw = re.sub(r"^```json\s*", "", raw)
-            raw = re.sub(r"\s*```$", "", raw)
-            return json.loads(raw)
-        except Exception as e:
-            logger.error(f"Gemini API call failed: {e}")
-            return {
-                "diagnosis": f"Gemini API error: {e}",
-                "severity": "unknown",
-                "fix_commands": [],
-                "safe_to_auto_execute": False,
-                "confidence": 0.0,
-            }
-
-    def _is_safe_command(cmd: str) -> bool:
-        """Block any command matching destructive patterns."""
-        return not BLOCKED_VERBS.search(cmd)
-
-    def _execute_fixes(fix_commands: list, confidence: float, safe: bool) -> list:
-        """Execute fix commands if they pass safety checks."""
-        results = []
-        if not safe or confidence < CONFIDENCE_THRESHOLD:
-            results.append(f"⚠️ Auto-execution SKIPPED — confidence={confidence:.0%}, safe={safe}. Manual review required.")
-            return results
-
-        for cmd in fix_commands:
-            if not _is_safe_command(cmd):
-                results.append(f"🚫 BLOCKED (destructive pattern): `{cmd}`")
-                continue
-            logger.info(f"AI-SRE executing: {cmd}")
-            output = _run(cmd, timeout=60)
-            results.append(f"✅ `{cmd}`\n```\n{output}\n```")
-
-        return results
-
-    def _build_finding(ctx: dict, gemini: dict, exec_results: list, resource_name: str) -> Finding:
-        """Build a Robusta Finding with full AI analysis."""
-        severity_map = {
-            "critical": FindingSeverity.HIGH,
-            "high": FindingSeverity.HIGH,
-            "medium": FindingSeverity.MEDIUM,
-            "low": FindingSeverity.LOW,
-        }
-        sev = severity_map.get(gemini.get("severity", "medium"), FindingSeverity.MEDIUM)
-        confidence_pct = f"{gemini.get('confidence', 0):.0%}"
-        finding = Finding(
-            title=f"🤖 AI-SRE: {resource_name} — {gemini.get('root_cause_category', 'Failure Detected')}",
-            source=FindingType.MANUAL,
-            severity=sev,
-        )
-        finding.add_enrichment([
-            MarkdownBlock(f"""## 🔍 AI Diagnosis (Confidence: {confidence_pct})
-{gemini.get('diagnosis', 'No diagnosis available.')}
-
-**Severity:** `{gemini.get('severity', 'unknown').upper()}`
-**Category:** `{gemini.get('root_cause_category', 'unknown')}`
-
-## 🛠️ Fix Explanation
-{gemini.get('explanation', 'N/A')}
-
-## ⚡ Execution Results
-{chr(10).join(exec_results) if exec_results else '_(no commands executed)_'}
-
-## ✅ Verification Command
-```
-{gemini.get('post_fix_verification', 'kubectl get pods -A')}
-```
-""")
-        ])
-        return finding
-
-    # ──────────────────────────────────────────────
-    # Robusta Action Triggers — all failure types
-    # ──────────────────────────────────────────────
-
-    @action
-    def ai_sre_pod_failure(event: PodEvent):
-        """Triggered on any pod failure/crash — sends full context to Gemini for diagnosis and auto-remediation."""
-        pod = event.get_pod()
-        if not pod:
-            return
-        name = pod.metadata.name
-        ns = pod.metadata.namespace
-        logger.info(f"AI-SRE: Analyzing pod failure — {ns}/{name}")
-
-        ctx = _collect_context(ns, name, kind="pod")
-        gemini = _call_gemini(ctx)
-        exec_results = _execute_fixes(
-            gemini.get("fix_commands", []),
-            gemini.get("confidence", 0.0),
-            gemini.get("safe_to_auto_execute", False),
-        )
-        event.add_enrichment([
-            MarkdownBlock("## 🤖 AI-SRE Auto-Heal Analysis\n*Powered by Gemini AI*")
-        ])
-        finding = _build_finding(ctx, gemini, exec_results, f"{ns}/{name}")
-        event.add_finding(finding)
-
-    @action
-    def ai_sre_job_failure(event: JobEvent):
-        """Triggered on job failure."""
-        job = event.get_job()
-        if not job:
-            return
-        name = job.metadata.name
-        ns = job.metadata.namespace
-        logger.info(f"AI-SRE: Analyzing job failure — {ns}/{name}")
-
-        ctx = _collect_context(ns, name, kind="job")
-        gemini = _call_gemini(ctx)
-        exec_results = _execute_fixes(
-            gemini.get("fix_commands", []),
-            gemini.get("confidence", 0.0),
-            gemini.get("safe_to_auto_execute", False),
-        )
-        finding = _build_finding(ctx, gemini, exec_results, f"{ns}/{name}")
-        event.add_finding(finding)
-
-    @action
-    def ai_sre_prometheus_alert(event: PrometheusKubernetesAlert):
-        """Triggered on ANY Prometheus alert — generic fallback for all other failure types."""
-        alert = event.get_alert()
-        labels = alert.labels if alert else {}
-        name = labels.get("pod") or labels.get("deployment") or labels.get("job_name") or "unknown"
-        ns = labels.get("namespace", "default")
-        kind = "pod" if labels.get("pod") else "deployment"
-
-        logger.info(f"AI-SRE: Analyzing Prometheus alert — {alert.name if alert else 'unknown'} in {ns}/{name}")
-
-        ctx = _collect_context(ns, name, kind=kind)
-        ctx["alert_name"] = alert.name if alert else "unknown"
-        ctx["alert_labels"] = labels
-        ctx["alert_description"] = labels.get("description", "")
-        gemini = _call_gemini(ctx)
-        exec_results = _execute_fixes(
-            gemini.get("fix_commands", []),
-            gemini.get("confidence", 0.0),
-            gemini.get("safe_to_auto_execute", False),
-        )
-        finding = _build_finding(ctx, gemini, exec_results, f"Alert:{ctx['alert_name']} {ns}/{name}")
-        event.add_finding(finding)
+  resourceVersion: "84197"
+  uid: ceb6a878-d1bf-4d06-8590-6fa45cad462e

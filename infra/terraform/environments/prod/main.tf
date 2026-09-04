@@ -139,3 +139,21 @@ module "albc_irsa" {
     }
   }
 }
+resource "kubernetes_config_map" "django_config" {
+  metadata {
+    name      = "django-config"
+    namespace = kubernetes_namespace.django.metadata[0].name
+  }
+  data = {
+    DB_HOST = split(":", module.rds.db_instance_endpoint)[0]
+    DB_PORT = "3306"
+    DB_NAME = "notes_db"
+    DB_USER = "notes_app"
+    ALLOWED_HOSTS = "*"
+    DEBUG = "False"
+    CORS_ALLOW_ALL_ORIGINS = "True"
+    CORS_ALLOWED_ORIGINS = "http://localhost,http://${module.s3_frontend.website_endpoint}"
+    CSRF_TRUSTED_ORIGINS = "http://localhost,http://${module.s3_frontend.website_endpoint}"
+  }
+}
+
