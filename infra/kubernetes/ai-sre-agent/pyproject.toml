@@ -1,0 +1,13 @@
+[tool.poetry]
+name = "ai_sre_actions"
+version = "0.1.0"
+description = "AI SRE Gemini-powered auto-healing actions"
+authors = ["SRE <sre@company.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+requests = "*"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

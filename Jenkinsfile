@@ -243,13 +243,23 @@ pipeline {
         }
 
         // ── STAGE 8: CLOUDFRONT INVALIDATION (non-fatal) ─────────────────────
+        // NOTE: CloudFront is disabled — AWS account needs verification before
+        // CloudFront resources can be created. Uncomment once verified.
         // stage('CloudFront Invalidation') {
         //     steps {
         //         container('aws-helm') {
         //             script {
         //                 try {
-        //                     sh "aws cloudfront create-invalidation --distribution-id ${CLOUDFRONT_DISTRIBUTION_ID} --paths '/*'"
-        //                     echo "CloudFront invalidation triggered successfully!"
+        //                     def distId = sh(
+        //                         script: "aws cloudfront list-distributions --query \"DistributionList.Items[?Origins.Items[0].Id=='S3-${S3_BUCKET_NAME}'].Id\" --output text",
+        //                         returnStdout: true
+        //                     ).trim()
+        //                     if (distId && distId != 'None') {
+        //                         sh "aws cloudfront create-invalidation --distribution-id ${distId} --paths '/*'"
+        //                         echo "CloudFront invalidation triggered successfully for ${distId}!"
+        //                     } else {
+        //                         echo "WARNING: CloudFront distribution not found for origin S3-${S3_BUCKET_NAME}"
+        //                     }
         //                 } catch (Exception e) {
         //                     echo "WARNING: CloudFront invalidation failed (non-fatal) — ${e.message}"
         //                 }

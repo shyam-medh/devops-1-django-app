@@ -211,3 +211,19 @@ resource "helm_release" "robusta" {
   ]
 }
 
+resource "null_resource" "apply_robusta_rbac" {
+  depends_on = [helm_release.robusta]
+
+  triggers = {
+    hash = filemd5("../../../kubernetes/ai-sre-agent/rbac.yaml")
+  }
+
+  provisioner "local-exec" {
+    command = <<EOT
+aws eks update-kubeconfig --region ap-south-1 --name django-notes-eks-prod
+kubectl apply -f ../../../kubernetes/ai-sre-agent/rbac.yaml
+kubectl apply -f ../../../kubernetes/ai-sre-agent/action-configmap.yaml
+EOT
+  }
+}
+

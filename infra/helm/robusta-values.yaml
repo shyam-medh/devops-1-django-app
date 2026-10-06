@@ -1,8 +1,6 @@
 clusterName: django-notes-eks-prod
 isSmallCluster: true
 
-
-
 # webhook_sink: findings are POSTed as JSON — also logged to stdout → CloudWatch via Fluent Bit
 sinksConfig:
   - webhook_sink:
@@ -10,10 +8,8 @@ sinksConfig:
       url: "https://httpbin.org/post"
       format: json
 
-# playbookRepos removed in favor of direct ConfigMap mount
-
 runner:
-  extraEnv:
+  additional_env_vars:
     - name: GEMINI_API_KEY
       valueFrom:
         secretKeyRef:
@@ -24,13 +20,23 @@ runner:
       configMap:
         name: ai-sre-action
   extraVolumeMounts:
+    # pyproject.toml at the repo root so Robusta can read tool.poetry.name
     - name: ai-sre-action
-      mountPath: /etc/robusta/playbooks/storage/ai_sre_actions
+      mountPath: /etc/robusta/playbooks/storage/ai_sre_actions/pyproject.toml
+      subPath: pyproject.toml
+    # Package module files inside the ai_sre_actions/ subdirectory
+    - name: ai-sre-action
+      mountPath: /etc/robusta/playbooks/storage/ai_sre_actions/ai_sre_actions/__init__.py
+      subPath: __init__.py
+    - name: ai-sre-action
+      mountPath: /etc/robusta/playbooks/storage/ai_sre_actions/ai_sre_actions/ai_sre_agent.py
+      subPath: ai_sre_agent.py
 
 customPlaybooks:
   # Pod failures: CrashLoopBackOff, ImagePullBackOff, general crashes
   - triggers:
       - on_pod_crash_loop: {}
+      - on_image_pull_backoff: {}
     actions:
       - ai_sre_pod_failure: {}
 

@@ -71,3 +71,24 @@ grafana:
     hosts:
       - "" # Catch-all
     path: /
+
+alertmanager:
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['namespace', 'alertname']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: 'robusta'
+      routes:
+      - receiver: 'robusta'
+        matchers:
+          - alertname =~ "InfoInhibitor|Watchdog"
+    receivers:
+    - name: 'null'
+    - name: 'robusta'
+      webhook_configs:
+      - url: 'http://robusta-runner.robusta.svc.cluster.local/api/alerts'
+        send_resolved: true
