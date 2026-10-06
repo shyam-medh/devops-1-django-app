@@ -1,6 +1,6 @@
 # Django Notes App — Production DevOps Project
 
-A full-stack notes application built with **Django REST Framework** and **React**, deployed on **AWS EKS** with a complete production-grade DevOps pipeline including automated CI/CD, container-native builds, Kubernetes orchestration, centralized monitoring, and fully automated infrastructure as code.
+A full-stack notes application built with **Django REST Framework** and **React**, deployed on **AWS EKS** with a complete production-grade DevOps pipeline. Features include automated CI/CD, container-native builds, Kubernetes orchestration, centralized monitoring, fully automated infrastructure as code, and an **autonomous AI SRE Agent** (Robusta + Gemini) for self-healing infrastructure.
 
 ---
 
