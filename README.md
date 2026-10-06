@@ -246,29 +246,44 @@ This project features a fully autonomous AI SRE agent built with **Robusta** and
 
 ### End-to-End Investigation Flow
 
-```text
-  [Kubernetes] ──────► (Pod Crashes / ImagePullBackOff / OOMKilled)
-       │
-       ▼
-  [Robusta Engine] ──► Intercepts Kubernetes Event / Prometheus Alert
-       │
-       ▼
-  [Python Action] ───► Initiates AI-SRE Investigation Loop
-       │
-       ▼
-  [Gemini API] ◄─────► Uses `kubectl_read` tool call to inspect pod/logs dynamically
-       │
-       ▼
-  [Gemini API] ──────► Determines Root Cause & Generates JSON Fix Commands
-       │
-       ▼
-  [Policy Engine] ───► Validates commands (blocks unsafe/destructive operations)
-       │
-       ▼
-  [Kubernetes] ◄─────► Applies Safe Fix (e.g., `kubectl rollout undo`) & Verifies
-       │
-       ▼
-  [Reporting] ───────► Saves structured Incident Report as a Kubernetes Finding
+```mermaid
+graph LR
+    subgraph Detect["Detect (any failure)"]
+        A1["K8s Warning events (any<br>reason)"]
+        A2["All Prometheus alerts"]
+        A3["Synthetic probe: create,<br>read, delete a note via ALB"]
+    end
+
+    B["Incident manager: dedup,<br>cooldown, one fix at a time<br>per workload"]
+    
+    C["Gemini Investigation loop<br>(Function calling, up to 12<br>steps)"]
+    
+    D["kubectl<br>get/describe/logs/events,<br>HTTP probe, TCP probe to<br>RDS"]
+    
+    E["Proposed fix"]
+    
+    F["Policy engine (code): verb<br>+ namespace allowlist,<br>server dry-run"]
+    
+    G1["Execute"]
+    G2["Escalate with exact<br>commands"]
+    
+    H["Verify: rollout status +<br>rerun the failed check"]
+    
+    I1["Incident report + MTTR"]
+    I2["Auto-rollback, retry with<br>feedback (max 2)"]
+
+    A1 ~~~ A2
+    A2 ~~~ A3
+    Detect --> B
+    B --> C
+    C -- "read-only tools" --> D
+    C --> E
+    E --> F
+    F -- "low risk" --> G1
+    F -- "high risk" --> G2
+    G1 --> H
+    H -- "fixed" --> I1
+    H -- "not-fixed" --> I2
 ```
 
 ### How it works:
