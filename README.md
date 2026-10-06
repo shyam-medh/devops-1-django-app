@@ -10,7 +10,10 @@ A full-stack notes application built with **Django REST Framework** and **React*
                         ┌─────────────────────────────────────────────┐
                         │                AWS Cloud                     │
                         │                                              │
-  Browser ──────────► S3 Static Website (React Frontend)              │
+  Browser ──────────► AWS CloudFront CDN                              │
+                        │         │                                    │
+                        │         ▼                                    │
+                        │   S3 Static Website (React Frontend)         │
                         │                                              │
   Browser ──────────► AWS ALB (Ingress)                               │
                         │         │                                    │
@@ -27,6 +30,10 @@ A full-stack notes application built with **Django REST Framework** and **React*
                         │   │  Monitoring Namespace    │               │
                         │   │  └─ Prometheus           │               │
                         │   │  └─ Grafana              │               │
+                        │   │                          │               │
+                        │   │  Robusta Namespace       │               │
+                        │   │  └─ Robusta Runner       │               │
+                        │   │  └─ AI-SRE Python Agent  │               │
                         │   └─────────────────────────┘               │
                         │         │                                    │
                         │         ▼                                    │
@@ -57,7 +64,6 @@ A full-stack notes application built with **Django REST Framework** and **React*
 | **Monitoring** | Prometheus + Grafana | Cluster and application metrics |
 | **Security Scanning** | Bandit (SAST) | Static code vulnerability analysis |
 | **Identity** | IRSA (IAM Roles for Service Accounts) | Keyless AWS access from Kubernetes pods |
-| **CDN (Planned)** | AWS CloudFront | Cache invalidation IAM role provisioned; distribution pending |
 | **AI SRE Agent** | Robusta + Gemini API | Two-phase automated diagnosis and self-healing for Kubernetes |
 
 ---
@@ -102,6 +108,12 @@ A full-stack notes application built with **Django REST Framework** and **React*
 │   │   ├── jenkins/                Helm values for Jenkins (Kubernetes plugin configured)
 │   │   ├── prometheus/             Helm values for Prometheus
 │   │   └── grafana/                Helm values for Grafana
+│   │
+│   ├── kubernetes/
+│   │   └── ai-sre-agent/           Robusta AI SRE Agent configuration
+│   │       ├── ai_sre_agent.py     The Python agent logic (Gemini API)
+│   │       ├── action-configmap.yaml ConfigMap for custom action
+│   │       └── rbac.yaml           Role-Based Access Control
 │   │
 │   └── docker/
 │       └── jenkins-agent-aws/      Custom Jenkins agent image (aws-cli + helm + kubectl)
@@ -202,6 +214,7 @@ All infrastructure is provisioned via Terraform with a **modular architecture** 
 | `jenkins` | Jenkins (official) | `jenkins` |
 | `prometheus` | Prometheus Community | `monitoring` |
 | `grafana` | Grafana | `monitoring` |
+| `robusta` | Robusta | `robusta` |
 | `django-backend` | Local chart | `django` |
 
 ### IAM & Security (IRSA)
