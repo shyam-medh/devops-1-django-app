@@ -57,6 +57,7 @@ A full-stack notes application built with **Django REST Framework** and **React*
 | **Monitoring** | Prometheus + Grafana | Cluster and application metrics |
 | **Security Scanning** | Bandit (SAST) | Static code vulnerability analysis |
 | **Identity** | IRSA (IAM Roles for Service Accounts) | Keyless AWS access from Kubernetes pods |
+| **CDN (Planned)** | AWS CloudFront | Cache invalidation IAM role provisioned; distribution pending |
 | **AI SRE Agent** | Robusta + Gemini API | Two-phase automated diagnosis and self-healing for Kubernetes |
 
 ---
@@ -164,7 +165,11 @@ Stage 7: Deploy Frontend to S3
    └─ index.html set to no-cache for instant updates
    └─ Static assets set to 1-year cache for performance
 
-Stage 8: Smoke Test
+Stage 8: CloudFront Invalidation
+   └─ aws cloudfront create-invalidation --paths '/*'
+   └─ Non-fatal — pipeline continues if CloudFront is not set up
+
+Stage 9: Smoke Test
    └─ curl GET /api/notes/ with retry logic
    └─ Accepts HTTP 200, 401, or 403 as "passing"
    └─ Non-fatal warning on failure — Fargate cold starts can delay readiness
@@ -317,6 +322,7 @@ terraform destroy -auto-approve
 | Jenkins pods stuck in `Pending` | Fargate profile may not match the pod's namespace/labels. Check: `kubectl describe pod <pod> -n jenkins` |
 | Django pods not connecting to RDS | Check that External Secrets Operator synced the secret: `kubectl get secret django-backend-db-secret -n django` |
 | Smoke test returns `000` | Fargate cold start — pods take 60–90s to reach `Running`. Re-run the pipeline or wait. |
+| CloudFront invalidation fails | Distribution ID in `Jenkinsfile` may be outdated or CloudFront is not set up. Stage is non-fatal and the pipeline will still succeed. |
 | AI SRE Agent Not Triggering | Verify that Robusta runner pod is running: `kubectl get pods -n robusta`. Ensure `ai-sre-action` ConfigMap is deployed. |
 
 ---
