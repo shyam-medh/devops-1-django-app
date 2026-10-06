@@ -299,6 +299,13 @@ graph LR
     H -- "not-fixed" --> I2
 ```
 
+### The Role of Robusta (The Event Router)
+Robusta acts as the backbone of the AI-SRE architecture. Instead of writing custom Kubernetes watchers from scratch, this project leverages Robusta to:
+1. **Listen to the API Server & Prometheus:** It natively catches pod crashes (`CrashLoopBackOff`, `OOMKilled`) and Prometheus AlertManager webhooks.
+2. **Execute Custom Python Playbooks:** When an event is detected, Robusta triggers our custom Python action (`ai_sre_agent.py`) running inside its runner pod.
+3. **Provide Cluster Context:** Robusta automatically injects the exact failing Kubernetes resource object (like a Pod or Deployment) directly into our Python code, allowing the script to instantly know *what* failed without polling.
+4. **Publish Findings:** Once the Gemini LLM finishes the investigation, the results are bundled into a Robusta `Finding` and pushed to our configured sinks (like the Robusta UI or Slack).
+
 ### How it works:
 1. **Detection:** Catch-all triggers monitor the cluster for *any* Kubernetes Warning events (CrashLoopBackOff, ImagePullBackOff, FailedScheduling, etc.) and Prometheus alerts (CPU throttling, network failures).
 2. **Diagnosis Loop (Function Calling):** Gemini is given a set of custom tools (e.g., `kubectl_read`, `http_probe`, `tcp_probe`, `get_rollout_history`). It investigates the failure step-by-step, just like a human SRE.
