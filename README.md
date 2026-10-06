@@ -240,6 +240,20 @@ No secrets are ever hardcoded in container images or Kubernetes manifests.
 
 ---
 
+## 🤖 AI SRE Agent (Self-Healing Kubernetes)
+
+This project features a fully autonomous AI SRE agent built with **Robusta** and **Google Gemini** that monitors the EKS cluster and automatically remediates production failures. Unlike traditional automated runbooks that only handle known scenarios, this agent uses a dynamic investigation loop.
+
+### How it works:
+1. **Detection:** Catch-all triggers monitor the cluster for *any* Kubernetes Warning events (CrashLoopBackOff, ImagePullBackOff, FailedScheduling, etc.) and Prometheus alerts (CPU throttling, network failures).
+2. **Diagnosis Loop (Function Calling):** Gemini is given a set of custom tools (e.g., `kubectl_read`, `http_probe`, `tcp_probe`, `get_rollout_history`). It investigates the failure step-by-step, just like a human SRE.
+3. **Execution Policy:** A strict code-based policy engine ensures the agent can only execute safe, reversible actions autonomously (e.g., `rollout restart`, `rollout undo`, `scale`). Higher-risk structural changes (like `kubectl patch`) are evaluated via a dry-run server and then surfaced to the human operator if necessary.
+4. **Verification:** The agent automatically verifies its own fixes by checking rollout statuses or rerunning probes, reducing MTTR and minimizing downtime.
+
+This agent transforms passive monitoring into active self-healing infrastructure.
+
+---
+
 ## 🚀 How to Deploy (From Scratch)
 
 ### Prerequisites
