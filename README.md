@@ -244,6 +244,33 @@ No secrets are ever hardcoded in container images or Kubernetes manifests.
 
 This project features a fully autonomous AI SRE agent built with **Robusta** and **Google Gemini** that monitors the EKS cluster and automatically remediates production failures. Unlike traditional automated runbooks that only handle known scenarios, this agent uses a dynamic investigation loop.
 
+### End-to-End Investigation Flow
+
+```text
+  [Kubernetes] ──────► (Pod Crashes / ImagePullBackOff / OOMKilled)
+       │
+       ▼
+  [Robusta Engine] ──► Intercepts Kubernetes Event / Prometheus Alert
+       │
+       ▼
+  [Python Action] ───► Initiates AI-SRE Investigation Loop
+       │
+       ▼
+  [Gemini API] ◄─────► Uses `kubectl_read` tool call to inspect pod/logs dynamically
+       │
+       ▼
+  [Gemini API] ──────► Determines Root Cause & Generates JSON Fix Commands
+       │
+       ▼
+  [Policy Engine] ───► Validates commands (blocks unsafe/destructive operations)
+       │
+       ▼
+  [Kubernetes] ◄─────► Applies Safe Fix (e.g., `kubectl rollout undo`) & Verifies
+       │
+       ▼
+  [Reporting] ───────► Saves structured Incident Report as a Kubernetes Finding
+```
+
 ### How it works:
 1. **Detection:** Catch-all triggers monitor the cluster for *any* Kubernetes Warning events (CrashLoopBackOff, ImagePullBackOff, FailedScheduling, etc.) and Prometheus alerts (CPU throttling, network failures).
 2. **Diagnosis Loop (Function Calling):** Gemini is given a set of custom tools (e.g., `kubectl_read`, `http_probe`, `tcp_probe`, `get_rollout_history`). It investigates the failure step-by-step, just like a human SRE.
